@@ -11,7 +11,7 @@ real_data <- F
 set_seed <- T
 
 sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
-if (is.na(sim_num)){sim_num <- 99}
+if (is.na(sim_num)){sim_num <- 999}
 if (set_seed){set.seed(sim_num)}
 
 RE_num <- as.numeric(commandArgs(TRUE)[1])
@@ -58,12 +58,12 @@ logit <- function(x){
   return(log(x/(1-x)))
 }
 
-Params2TranVectorT <- function(index,len,params_tran){
-  return(t(sapply(c(2:(len)),FUN = Params2Tran,params_tran = params_tran,index=index)))
+Params2TranVectorT <- function(re_ind,len,params_tran){
+  return(t(sapply(c(2:(len)),FUN = Params2Tran,params_tran = params_tran,re_ind=re_ind)))
 }
 
-TranByTimeVec <- function(index, params_tran, time_vec){
-  return(lapply(time_vec, Params2Tran, params_tran = params_tran,index=index))
+TranByTimeVec <- function(re_ind, params_tran, time_vec){
+  return(lapply(time_vec, Params2Tran, params_tran = params_tran,re_ind=re_ind))
 }
 
 Param2TranHelper <- function(p12,p21){
@@ -75,21 +75,12 @@ Param2TranHelper <- function(p12,p21){
   return(tran)
 }
 
-Params2Tran <- function(params_tran,time,index){
+Params2Tran <- function(params_tran,time,re_ind){
   
-  harmonic_ind <- ((index*2)-1)+6
-  param_matrix <- matrix(params_tran,ncol=18,nrow=2, byrow = T)
-  if (index == 1){
-    tran <- Param2TranHelper(param_matrix[1,1]+param_matrix[1,7]*cos(2*pi*time/96)+param_matrix[1,8]*sin(2*pi*time/96),
-                             param_matrix[2,1]+param_matrix[2,7]*cos(2*pi*time/96)+param_matrix[2,8]*sin(2*pi*time/96))
-  } else {
-    tran <- Param2TranHelper(param_matrix[1,1]+param_matrix[1,index]+
-                               (param_matrix[1,7]+param_matrix[1,harmonic_ind])*cos(2*pi*time/96)+
-                               (param_matrix[1,8]+param_matrix[1,harmonic_ind+1])*sin(2*pi*time/96),
-                             param_matrix[2,1]+param_matrix[2,index]+
-                               (param_matrix[2,7]+param_matrix[2,harmonic_ind])*cos(2*pi*time/96)+
-                               (param_matrix[2,8]+param_matrix[2,harmonic_ind+1])*sin(2*pi*time/96))
-  }
+  param_matrix <- matrix(params_tran[re_ind,],ncol=3,nrow=2, byrow = T)
+  tran <- Param2TranHelper(param_matrix[1,1]+param_matrix[1,2]*cos(2*pi*time/96)+param_matrix[1,3]*sin(2*pi*time/96),
+                           param_matrix[2,1]+param_matrix[2,2]*cos(2*pi*time/96)+param_matrix[2,3]*sin(2*pi*time/96))
+
   return(tran)
 }
 
@@ -174,15 +165,6 @@ logClassification <- function(time,act,light,mu_act,sig_act,mu_light,sig_light,l
   return(lognorm_dens)
 }
 
-ChooseTran <- function(covar_tran_bool){
-  covar_ind <- which(covar_tran_bool== 1)
-  if (length(covar_ind) == 2){
-    return(covar_ind[2])
-  } else {
-    return(1)
-  }
-}
-
 ChooseCovar <- function(covar_vec){
   return(which(covar_vec == 1))
 }
@@ -206,18 +188,12 @@ SimulateMC <- function(day_length,init,tran_list_ind,covar_ind){
 
 SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
                         emit_light,corr_mat,lod_act,lod_light, pi_l){
-
-  
   mixture_num <- dim(emit_act)[3]
-
   
-  
-  # covar_mat <- t(rmultinom(num_of_people,1,rep(1/mixture_num,mixture_num)))
   covar_mat <- t(rmultinom(num_of_people,1,pi_l_true))
-  covar_mat <- cbind((numeric(num_of_people) + 1),covar_mat[,2:mixture_num])
   
-  tran_list <- lapply(c(1:dim(covar_mat)[2]),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
-  covar_vec <- apply(covar_mat,1,ChooseTran)
+  tran_list <- lapply(c(1:mixture_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
+  covar_vec <- apply(covar_mat,1,ChooseCovar)
   
   for (ind in 1:num_of_people){
     activity <- numeric(day_length)
@@ -261,39 +237,34 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
     }
   }
 
-  
-  
-  
   light_matrix[light_matrix<lod_light] <- lod_light
   activity_matrix[activity_matrix<lod_act] <- lod_act
   
-  return(list(hidden_states_matrix,activity_matrix,light_matrix,covar_mat))
+  return(list(hidden_states_matrix,activity_matrix,light_matrix,covar_vec))
 }
 
-CondMarginalize <- function(alpha,beta,pi_l,wakesleep){
-  
-  if(wakesleep == "wake"){wakesleep_ind <- 1}
-  if(wakesleep == "sleep"){wakesleep_ind <- 2}
+CondMarginalize <- function(alpha,beta,pi_l){
   alpha_beta <- simplify2array(alpha) + simplify2array(beta)
   
   
   for (ind in 1:dim(alpha_beta)[4]){
     for (re_ind in 1:dim(alpha_beta)[3]){
-      # alpha_beta[,,re_ind,ind] <- alpha_beta[,,re_ind,ind] + log(re_weights[ind,re_ind])
       alpha_beta[,,re_ind,ind] <- alpha_beta[,,re_ind,ind] + log(pi_l[re_ind])
     }
   }
   
   ind_like_mat <- apply(alpha_beta,c(1,4),logSumExp)
   
-  weight_array <- array(0, dim = c(dim(alpha_beta)[1],dim(alpha_beta)[4],dim(alpha_beta)[3]))
+  weight_array_wake <- array(0, dim = c(dim(alpha_beta)[1],dim(alpha_beta)[4],dim(alpha_beta)[3]))
+  weight_array_sleep <- array(0, dim = c(dim(alpha_beta)[1],dim(alpha_beta)[4],dim(alpha_beta)[3]))
   for (ind in 1:dim(alpha_beta)[4]){
     for (t in 1:dim(alpha_beta)[1]){
-      weight_array[t,ind,] <- alpha_beta[t,wakesleep_ind,,ind] - ind_like_mat[t,ind]
+      weight_array_wake[t,ind,] <- alpha_beta[t,1,,ind] - ind_like_mat[t,ind]
+      weight_array_sleep[t,ind,] <- alpha_beta[t,2,,ind] - ind_like_mat[t,ind]
     }
   }
   
-  return(weight_array)
+  return(list(weight_array_wake,weight_array_sleep))
 }
 
 CalcInit <- function(alpha, beta,pi_l,log_sweights_vec){
@@ -322,8 +293,6 @@ CalcInit <- function(alpha, beta,pi_l,log_sweights_vec){
     init_mat[re_ind,] <- init_vec
   }
   
-  
-  
   return(init_mat)
   
 }
@@ -334,7 +303,6 @@ CalcProbRE <- function(alpha,pi_l){
   re_len <- dim(alpha[[1]])[3]
   re_weight_vec <- numeric(re_len)
   re_weights <- matrix(0,nrow = length(alpha),ncol = re_len)
-  
   
   
   for (ind in 1:length(alpha)){
@@ -352,42 +320,38 @@ CalcProbRE <- function(alpha,pi_l){
 CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_mat,covar_mat_tran,pi_l,lod_act,lod_light,lintegral_mat){
   
   len <- dim(act)[1]
+  re_num <- dim(emit_act)[3]
+  params_tran_working <- params_tran
   
-  gradient <- matrix(0,2,18)
-  hessian1 <- matrix(0,18,18)
-  hessian2 <- matrix(0,18,18)
-  hessian <- matrix(0,36,36)
-  hessian_vec <- matrix(0,2,18)
-  cos_part_vec <- matrix(0,2,6)
-  sin_part_vec <- matrix(0,2,6)
-  cos_sin_part <- matrix(0,2,6)
+  gradient <- array(0,c(2,3,re_num))
+  hessian_vec <- array(0,c(2,3,re_num))
+  cos_part_vec <- matrix(0,2,re_num)
+  sin_part_vec <- matrix(0,2,re_num)
+  cos_sin_part <- matrix(0,2,re_num)
   
-  
-  # tran_mat <- lapply(c(1:dim(covar_mat_tran)[2]),TranByTimeVec, params_tran = params_tran, time_vec = c(1:obs_per_day))
-  tran_list_mat <- lapply(c(1:dim(covar_mat_tran)[2]),Params2TranVectorT, len = len, params_tran = params_tran)
-  tran_ind_vec <- apply(covar_mat_tran,1,ChooseTran)
+  tran_list_mat <- lapply(c(1:re_num),Params2TranVectorT, len = len, params_tran = params_tran)
   ind_like_vec <- unlist(lapply(c(1:length(alpha)),IndLike,alpha = alpha, pi_l = pi_l, len = len))
   
   tran_vals_re_00 <- CalcTranHelperC(init_state = 0,new_state = 0,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,tran_ind_vec = tran_ind_vec,
+                                     light = light,tran_list_mat = tran_list_mat,
                                      emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
                                      alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                      corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
   
   tran_vals_re_01 <- CalcTranHelperC(init_state = 0,new_state = 1,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,tran_ind_vec = tran_ind_vec,
+                                     light = light,tran_list_mat = tran_list_mat,
                                      emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
                                      alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                      corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
   
   tran_vals_re_10 <- CalcTranHelperC(init_state = 1,new_state = 0,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,tran_ind_vec = tran_ind_vec,
+                                     light = light,tran_list_mat = tran_list_mat,
                                      emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
                                      alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                      corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
   
   tran_vals_re_11 <- CalcTranHelperC(init_state = 1,new_state = 1,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,tran_ind_vec = tran_ind_vec,
+                                     light = light,tran_list_mat = tran_list_mat,
                                      emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
                                      alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                      corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
@@ -397,175 +361,103 @@ CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_
       
       
       
-      if (init_state == 1 & new_state == 1){tran_vals_re <- tran_vals_re_00}
-      if (init_state == 1 & new_state == 2){tran_vals_re <- tran_vals_re_01}
-      if (init_state == 2 & new_state == 1){tran_vals_re <- tran_vals_re_10}
-      if (init_state == 2 & new_state == 2){tran_vals_re <- tran_vals_re_11}
-      
-      
-      tran_vals <- apply(tran_vals_re, c(1,2), sum)
+      if (init_state == 1 & new_state == 1){tran_vals <- tran_vals_re_00}
+      if (init_state == 1 & new_state == 2){tran_vals <- tran_vals_re_01}
+      if (init_state == 2 & new_state == 1){tran_vals <- tran_vals_re_10}
+      if (init_state == 2 & new_state == 2){tran_vals <- tran_vals_re_11}
       
       for (ind in 1:length(alpha)){
-        
-        tran_ind <- tran_ind_vec[ind]
-        harmonic_ind <- ((tran_ind*2)-1)+6
-        tran_vec <- tran_list_mat[[tran_ind]]
-        
-        if(init_state == 1 & new_state == 1){
-          # tran_prime <- -tran[1,2]
-          # tran_prime_prime <- -tran[1,1] * tran[1,2]
-          tran_prime <- -tran_vec[,3]
-          tran_prime_prime <- -tran_vec[,3]*tran_vec[,1]
+        for(re_ind in 1:re_num){
           
-        } else if(init_state == 1 & new_state == 2){ 
-          # tran_prime <- tran[1,1]
-          # tran_prime_prime <- -tran[1,1] * tran[1,2]
-          tran_prime <- tran_vec[,1]
-          tran_prime_prime <- -tran_vec[,3]*tran_vec[,1]
+          tran_vec <- tran_list_mat[[re_ind]]
           
-        } else if(init_state == 2 & new_state == 2){ 
-          # tran_prime <- -tran[2,1]
-          # tran_prime_prime <- -tran[2,1] * tran[2,2]
-          tran_prime <- -tran_vec[,2]
-          tran_prime_prime <- -tran_vec[,2] * tran_vec[,4]
+          if(init_state == 1 & new_state == 1){
+            # tran_prime <- -tran[1,2]
+            # tran_prime_prime <- -tran[1,1] * tran[1,2]
+            tran_prime <- -tran_vec[,3]
+            tran_prime_prime <- -tran_vec[,3]*tran_vec[,1]
+            
+          } else if(init_state == 1 & new_state == 2){ 
+            # tran_prime <- tran[1,1]
+            # tran_prime_prime <- -tran[1,1] * tran[1,2]
+            tran_prime <- tran_vec[,1]
+            tran_prime_prime <- -tran_vec[,3]*tran_vec[,1]
+            
+          } else if(init_state == 2 & new_state == 2){ 
+            # tran_prime <- -tran[2,1]
+            # tran_prime_prime <- -tran[2,1] * tran[2,2]
+            tran_prime <- -tran_vec[,2]
+            tran_prime_prime <- -tran_vec[,2] * tran_vec[,4]
+            
+          } else if(init_state == 2 & new_state == 1){ 
+            # tran_prime <- tran[2,2]
+            # tran_prime_prime <- -tran[2,1] * tran[2,2]
+            tran_prime <- tran_vec[,4]
+            tran_prime_prime <- -tran_vec[,2] * tran_vec[,4]
+          }
           
-        } else if(init_state == 2 & new_state == 1){ 
-          # tran_prime <- tran[2,2]
-          # tran_prime_prime <- -tran[2,1] * tran[2,2]
-          tran_prime <- tran_vec[,4]
-          tran_prime_prime <- -tran_vec[,2] * tran_vec[,4]
+          cos_vec <- cos(2*pi*c(2:(len))/96)
+          sin_vec <- sin(2*pi*c(2:(len))/96)
+          
+          gradient[init_state,1,re_ind] <- gradient[init_state,1,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime)
+          gradient[init_state,2,re_ind] <- gradient[init_state,2,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*cos_vec)
+          gradient[init_state,3,re_ind] <- gradient[init_state,3,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*sin_vec)
+          
+          hessian_vec[init_state,1,re_ind] <- hessian_vec[init_state,1,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime)
+          hessian_vec[init_state,2,re_ind] <- hessian_vec[init_state,2,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec^2)
+          hessian_vec[init_state,3,re_ind] <- hessian_vec[init_state,3,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec^2)
+          
+          cos_part_vec[init_state,re_ind] <- cos_part_vec[init_state,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec)
+          sin_part_vec[init_state,re_ind] <- sin_part_vec[init_state,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec)
+          
+          cos_sin_part[init_state,re_ind] <- cos_sin_part[init_state,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec)
+
         }
-        
-        #Maybe change this back to 1:len-1
-        cos_vec <- cos(2*pi*c(2:(len))/96)
-        sin_vec <- sin(2*pi*c(2:(len))/96)
-        
-        
-        gradient[init_state,tran_ind] <- gradient[init_state,tran_ind] + sum(tran_vals[,ind]*tran_prime)
-        gradient[init_state,harmonic_ind] <- gradient[init_state,harmonic_ind] + sum(tran_vals[,ind]*tran_prime*cos_vec)
-        gradient[init_state,harmonic_ind+1] <- gradient[init_state,harmonic_ind+1] + sum(tran_vals[,ind]*tran_prime*sin_vec)
-        
-        if (tran_ind != 1){
-          gradient[init_state,1] <- gradient[init_state,1] + sum(tran_vals[,ind]*tran_prime)
-          gradient[init_state,7] <- gradient[init_state,7] + sum(tran_vals[,ind]*tran_prime*cos_vec)
-          gradient[init_state,8] <- gradient[init_state,8] + sum(tran_vals[,ind]*tran_prime*sin_vec)
-        }
-        
-        
-        
-        
-        hessian_vec[init_state,tran_ind] <- hessian_vec[init_state,tran_ind] + sum(tran_vals[,ind]*tran_prime_prime)
-        
-        hessian_vec[init_state,harmonic_ind] <- hessian_vec[init_state,harmonic_ind] + sum(tran_vals[,ind]*tran_prime_prime*cos_vec^2)
-        hessian_vec[init_state,harmonic_ind+1] <- hessian_vec[init_state,harmonic_ind+1] + sum(tran_vals[,ind]*tran_prime_prime*sin_vec^2)
-        
-        cos_part_vec[init_state,tran_ind] <- cos_part_vec[init_state,tran_ind] + sum(tran_vals[,ind]*tran_prime_prime*cos_vec)
-        sin_part_vec[init_state,tran_ind] <- sin_part_vec[init_state,tran_ind] + sum(tran_vals[,ind]*tran_prime_prime*sin_vec)
-        
-        cos_sin_part[init_state,tran_ind] <- cos_sin_part[init_state,tran_ind] + sum(tran_vals[,ind]*tran_prime_prime*cos_vec*sin_vec)
-        
-        if (tran_ind != 1){
-          hessian_vec[init_state,1] <- hessian_vec[init_state,1] + sum(tran_vals[,ind]*tran_prime_prime)
-          
-          hessian_vec[init_state,7] <- hessian_vec[init_state,7] + sum(tran_vals[,ind]*tran_prime_prime*cos_vec^2)
-          hessian_vec[init_state,8] <- hessian_vec[init_state,8] + sum(tran_vals[,ind]*tran_prime_prime*sin_vec^2)
-          
-          cos_part_vec[init_state,1] <- cos_part_vec[init_state,1] + sum(tran_vals[,ind]*tran_prime_prime*cos_vec)
-          sin_part_vec[init_state,1] <- sin_part_vec[init_state,1] + sum(tran_vals[,ind]*tran_prime_prime*sin_vec)
-          
-          cos_sin_part[init_state,1] <- cos_sin_part[init_state,1] + sum(tran_vals[,ind]*tran_prime_prime*cos_vec*sin_vec)
-        }
-        
-        
-        
-        
-        
       }
-      
-      
     }
   }
   
-  gradient <- as.vector(t(gradient))
   
-  #### HESS 1
+  for(re_ind in 1:re_num){
   
-  diag(hessian1) <- c(hessian_vec[1,])
-  hessian1[1,1:6] <- c(hessian_vec[1,1:6])
-  hessian1[1:6,7] <- cos_part_vec[1,]
-  hessian1[1:6,8] <- sin_part_vec[1,]
-  hessian1[1,c(7,9,11,13,15,17)] <- cos_part_vec[1,]
-  hessian1[1,c(8,10,12,14,16,18)] <- sin_part_vec[1,]
-  hessian1[2,c(9,10)] <- c(cos_part_vec[1,2],sin_part_vec[1,2])
-  hessian1[3,c(11,12)] <- c(cos_part_vec[1,3],sin_part_vec[1,3])
-  hessian1[4,c(13,14)] <- c(cos_part_vec[1,4],sin_part_vec[1,4])
-  hessian1[5,c(15,16)] <- c(cos_part_vec[1,5],sin_part_vec[1,5])
-  hessian1[6,c(17,18)] <- c(cos_part_vec[1,6],sin_part_vec[1,6])
+    gradient_re <- as.vector(t(gradient[,,re_ind]))
+    hessian_vec_re <- hessian_vec[,,re_ind]
+    hessian_re <- matrix(0,6,6)
+    hessian_re1 <- matrix(0,3,3)
+    hessian_re2 <- matrix(0,3,3)
+    
+    #### HESS 1
+    
+    diag(hessian_re1) <- c(hessian_vec_re[1,])
+    hessian_re1[1,2] <- cos_part_vec[1,re_ind]
+    hessian_re1[1,3] <- sin_part_vec[1,re_ind]
+    hessian_re1[2,3] <- cos_sin_part[1,re_ind]
+    
+    hessian_re1 <- hessian_re1+t(hessian_re1)
+    diag(hessian_re1) <- diag(hessian_re1)/2
+    
+    #### HESS 2
+    
+    diag(hessian_re2) <- c(hessian_vec_re[2,])
+    hessian_re2[1,2] <- cos_part_vec[2,re_ind]
+    hessian_re2[1,3] <- sin_part_vec[2,re_ind]
+    hessian_re2[2,3] <- cos_sin_part[2,re_ind]
+    
+    hessian_re2 <- hessian_re2+t(hessian_re2)
+    diag(hessian_re2) <- diag(hessian_re2)/2
+    
+    #######
+    
+    
+    hessian_re[1:3,1:3] <- hessian_re1
+    hessian_re[4:6,4:6] <- hessian_re2
+    
   
-  hessian1[7,c(7,9,11,13,15,17)] <- hessian_vec[1,c(7,9,11,13,15,17)]
-  hessian1[7,c(8,10,12,14,16,18)] <- cos_sin_part[1,]
-  
-  hessian1[8,c(9,11,13,15,17)] <- cos_sin_part[1,2:6]
-  hessian1[8,c(8,10,12,14,16,18)] <- hessian_vec[1,c(8,10,12,14,16,18)]
-  
-  hessian1[7,8] <- cos_sin_part[1,1]
-  hessian1[9,10] <- cos_sin_part[1,2]
-  hessian1[11,12] <- cos_sin_part[1,3]
-  hessian1[13,14] <- cos_sin_part[1,4]
-  hessian1[15,16] <- cos_sin_part[1,5]
-  hessian1[17,18] <- cos_sin_part[1,6]
-  
-  hessian1 <- hessian1+t(hessian1)
-  diag(hessian1) <- diag(hessian1)/2
-  
-  #### HESS 2
-  
-  diag(hessian2) <- c(hessian_vec[2,])
-  hessian2[1,1:6] <- c(hessian_vec[2,1:6])
-  hessian2[1:6,7] <- cos_part_vec[2,]
-  hessian2[1:6,8] <- sin_part_vec[2,]
-  hessian2[1,c(7,9,11,13,15,17)] <- cos_part_vec[2,]
-  hessian2[1,c(8,10,12,14,16,18)] <- sin_part_vec[2,]
-  hessian2[2,c(9,10)] <- c(cos_part_vec[2,2],sin_part_vec[2,2])
-  hessian2[3,c(11,12)] <- c(cos_part_vec[2,3],sin_part_vec[2,3])
-  hessian2[4,c(13,14)] <- c(cos_part_vec[2,4],sin_part_vec[2,4])
-  hessian2[5,c(15,16)] <- c(cos_part_vec[2,5],sin_part_vec[2,5])
-  hessian2[6,c(17,18)] <- c(cos_part_vec[2,6],sin_part_vec[2,6])
-  
-  hessian2[7,c(7,9,11,13,15,17)] <- hessian_vec[2,c(7,9,11,13,15,17)]
-  hessian2[7,c(8,10,12,14,16,18)] <- cos_sin_part[2,]
-  
-  hessian2[8,c(9,11,13,15,17)] <- cos_sin_part[2,2:6]
-  hessian2[8,c(8,10,12,14,16,18)] <- hessian_vec[2,c(8,10,12,14,16,18)]
-  
-  
-  hessian2[7,8] <- cos_sin_part[2,1]
-  hessian2[9,10] <- cos_sin_part[2,2]
-  hessian2[11,12] <- cos_sin_part[2,3]
-  hessian2[13,14] <- cos_sin_part[2,4]
-  hessian2[15,16] <- cos_sin_part[2,5]
-  hessian2[17,18] <- cos_sin_part[2,6]
-  
-  hessian2 <- hessian2+t(hessian2)
-  diag(hessian2) <- diag(hessian2)/2
-  
-  #######
-  
-  
-  hessian[1:18,1:18] <- hessian1
-  hessian[19:36,19:36] <- hessian2
-  
-  grad <- -gradient
-  hess <- -hessian
-  
-  if (!real_data){
-    null_inds <- grad != 0
-    params_tran[null_inds] <- params_tran[null_inds] - solve(hess[null_inds,null_inds],grad[null_inds])
-  } else {
-    params_tran <- params_tran - solve(hess,grad)
+    params_tran_working[re_ind,] <- params_tran_working[re_ind,] - solve(-hessian_re,-gradient_re)
   }
+
   
-  return(params_tran)
+  return(params_tran_working)
 }
 
 EmitLogLike <- function(act,light,mu_act,sig_act,mu_light,sig_light,bivar_corr,lod_act,lod_light,weights_vec){
@@ -645,7 +537,6 @@ UpdateNorm <- function(FUN,mc_state,act,light,emit_act,emit_light,corr_mat,lod_a
   
 }
 
-
 SolveCatch <- function(block_ind_hess,block_ind_grad) {
   tryCatch(
     {
@@ -661,7 +552,6 @@ SolveCatch <- function(block_ind_hess,block_ind_grad) {
     finally = {}
   )
 }
-
 
 CalcLikelihood <- function(alpha,pi_l){
   return(sum(CalcLikelihoodIndVec(alpha,pi_l)))
@@ -701,19 +591,20 @@ IndLike <- function(alpha,pi_l,ind,len){
 
 ################## EM Setup ################## 
 
-obs_per_day <- 96
+day_length <- 96
+num_of_people <- 1000
 
 init_true <- matrix(c(.15,.85,.3,.7),2,2,byrow = T)
-params_tran_true <- c(-3,.5,-.25,0,0,0,.9,-.8,-1,.1,.2,1.5,0,0,0,0,0,0,
-                      -2.2,.3,-.3,0,0,0,-.75,.8,.75,.2,.3,.75,0,0,0,0,0,0)
+params_tran_true <- matrix(c(-3,.9,.1,-2.2,-.75,.5,
+                             -2.5,.1,.3,-1.9,.1,.5),nrow = 2,byrow = T)
+
 
 emit_act_true <- array(NA, c(2,2,2))
 emit_act1 <- matrix(c(1.5,.8,0,.5),2,2,byrow = T)
 emit_act2 <- matrix(c(2.5,1.2,.25,.75),2,2,byrow = T)
 emit_act_true[,,1] <- emit_act1
 emit_act_true[,,2] <- emit_act2
-
-
+num_re <- dim(emit_act_true)[3]
 
 emit_light_true <- array(NA, c(2,2,2))
 emit_light1 <- matrix(c(7,2.5,2,1.5),2,2,byrow = T)
@@ -726,7 +617,7 @@ corr_mat_true <- matrix(c(.6,.8,-.5,-.7),2,2,byrow = T)
 lod_act_true <- 0
 lod_light_true <- 0
 pi_l_true <- c(1/3,2/3)
-simulated_hmm <- SimulateHMM(day_length = obs_per_day,num_of_people = 1000,
+simulated_hmm <- SimulateHMM(day_length,num_of_people,
                               init=init_true,params_tran = params_tran_true,
                               emit_act = emit_act_true,emit_light = emit_light_true,corr_mat = corr_mat_true,
                               lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true)
@@ -734,22 +625,19 @@ simulated_hmm <- SimulateHMM(day_length = obs_per_day,num_of_people = 1000,
 mc <- simulated_hmm[[1]]
 act <- simulated_hmm[[2]]
 light <- simulated_hmm[[3]]
-covar_mat_tran <- simulated_hmm[[4]]
-tran_ind_vec <- apply(covar_mat_tran,1,ChooseTran)
+covar_vec <- simulated_hmm[[4]]
+
+init <- init_true  + runif(4)
+params_tran <- params_tran_true  + runif(12)
+
+tran_list <- lapply(c(1:num_re),TranByTimeVec, params_tran = params_tran, time_vec = c(1:96))
 
 
+emit_act <- emit_act_true + runif(8)
 
-init <- init_true
-params_tran <- params_tran_true
+emit_light <- emit_light_true  + runif(8)
 
-tran_list <- lapply(c(1:dim(covar_mat_tran)[2]),TranByTimeVec, params_tran = params_tran, time_vec = c(1:96))
-
-
-emit_act <- emit_act_true
-
-emit_light <- emit_light_true 
-
-corr_mat <- corr_mat_true
+corr_mat <- corr_mat_true + runif(4,-.29,.19)
 lod_act <- lod_act_true
 lod_light <- lod_light_true
 
@@ -764,7 +652,6 @@ pi_l <- pi_l_true
 # dim(emit_light)[3] <- 1
 # pi_l <- c(1)
 
-
 ################## EM ################## 
 
 lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
@@ -772,12 +659,12 @@ lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light
 alpha <- ForwardC(act = act,light = light,
          init = init,tran_list = tran_list,
          emit_act = emit_act,emit_light = emit_light,
-         tran_ind_vec = tran_ind_vec,lod_act = lod_act, lod_light =  lod_light, 
+         lod_act = lod_act, lod_light =  lod_light, 
          corr_mat = corr_mat,lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]))
 
 beta <- BackwardC(act = act,light = light, tran_list = tran_list,
               emit_act = emit_act,emit_light = emit_light,
-              tran_ind_vec = tran_ind_vec,lod_act = lod_act, lod_light =  lod_light, 
+              lod_act = lod_act, lod_light =  lod_light, 
               corr_mat = corr_mat,lintegral_mat = lintegral_mat)
          
 
@@ -794,19 +681,26 @@ while(abs(like_diff) > 1e-3*1e-10){
   likelihood <- new_likelihood
 
   init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
-
+  
   params_tran <- CalcTranC(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_mat,covar_mat_tran,pi_l,lod_act,lod_light,lintegral_mat)
-  tran_list <- lapply(c(1:dim(covar_mat_tran)[2]),TranByTimeVec, params_tran = params_tran, time_vec = c(1:obs_per_day))
+  tran_list <- lapply(c(1:num_re),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
   
   ################## Weights
-  #Weights are prob currently in the wake state
-  weights_array_wake <- exp(CondMarginalize(alpha,beta,pi_l,"wake"))
+  weights_array_list <- CondMarginalize(alpha,beta,pi_l)
+                            
+  weights_array_wake <- exp(weights_array_list[[1]])
   weights_mat_wake <-rowSums(weights_array_wake, dims = 2)
   weights_vec_wake <- as.vector(weights_mat_wake)
 
-  weights_array_sleep <- exp(CondMarginalize(alpha,beta,pi_l,"sleep"))
+  weights_array_sleep <- exp(weights_array_list[[2]])
   weights_mat_sleep <-rowSums(weights_array_sleep, dims = 2)
   weights_vec_sleep <- as.vector(weights_mat_sleep)
+  
+  # # Uncomment to use real mc states as weights
+  # weights_array_wake <- 1-mc
+  # weights_array_sleep <- mc
+  # dim(weights_array_wake)[3] <- 1
+  # dim(weights_array_sleep)[3] <- 1
   
   ################## RE
   
@@ -824,14 +718,8 @@ while(abs(like_diff) > 1e-3*1e-10){
     emit_act <- emit_act[,,reord_inds]
     emit_light <- emit_light[,,reord_inds]
     pi_l <- pi_l[reord_inds]
+    params_tran <- params_tran[reord_inds]
   }
-  
-  # # Uncomment to use real mc states as weights
-  # weights_array_wake <- 1-mc
-  # weights_array_sleep <- mc
-  # dim(weights_array_wake)[3] <- 1
-  # dim(weights_array_sleep)[3] <- 1
-  
   
   corr_mat[,1] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   corr_mat[,2] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
@@ -854,12 +742,12 @@ while(abs(like_diff) > 1e-3*1e-10){
   alpha <- ForwardC(act = act,light = light,
                     init = init,tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
-                    tran_ind_vec = tran_ind_vec,lod_act = lod_act, lod_light =  lod_light, 
+                    lod_act = lod_act, lod_light =  lod_light, 
                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]))
   
   beta <- BackwardC(act = act,light = light, tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
-                    tran_ind_vec = tran_ind_vec,lod_act = lod_act, lod_light =  lod_light, 
+                    lod_act = lod_act, lod_light =  lod_light, 
                     corr_mat = corr_mat,lintegral_mat = lintegral_mat)
   
   
@@ -874,9 +762,4 @@ while(abs(like_diff) > 1e-3*1e-10){
   
   
 }
-
-
-
-
-
 

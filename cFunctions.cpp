@@ -111,7 +111,7 @@ double logSumExpC(const arma::vec& x) {
 }
 
 // [[Rcpp::export]]
-mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act, cube emit_light,int tran_ind, int clust_i, double lod_act, double lod_light, NumericVector corr_vec, mat lintegral_mat, double log_sweight){
+mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act, cube emit_light,int clust_i, double lod_act, double lod_light, NumericVector corr_vec, mat lintegral_mat, double log_sweight){
 
 	mat alpha( act_ind.length(), 2 );
 
@@ -122,7 +122,7 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 	alpha(0,0) = log(init(0)) + log_class_0[0];
 	alpha(0,1) = log(init(1)) + log_class_1[0];
 	
-	List tran_time_list = tran_list[tran_ind - 1]; 
+	List tran_time_list = tran_list[clust_i]; 
 	
 	for (int i = 1; i < act_ind.length(); i++) {
 	  
@@ -148,7 +148,7 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 }
 
 // [[Rcpp::export]]
-mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Rcpp::List tran_list, cube emit_act, cube emit_light,int tran_ind, int clust_i, double lod_act, double lod_light, NumericVector corr_vec, mat lintegral_mat){
+mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Rcpp::List tran_list, cube emit_act, cube emit_light,int clust_i, double lod_act, double lod_light, NumericVector corr_vec, mat lintegral_mat){
   
   int n = act_ind.length(); 
   mat beta( n, 2 );
@@ -160,7 +160,7 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
   beta(n-1,0) = log(1);
   beta(n-1,1) = log(1);
   
-  List tran_time_list = tran_list[tran_ind - 1]; 
+  List tran_time_list = tran_list[clust_i]; 
   
   for (int i = n-2; i >= 0; i--) {
     
@@ -187,7 +187,7 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
 }
 
 // [[Rcpp::export]]
-List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light, NumericVector tran_ind_vec, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, NumericVector log_sweights_vec){
+List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light,double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, NumericVector log_sweights_vec){
 	int num_people = act.ncol();
 	int len = act.nrow();
 	int num_re = emit_act.n_slices;
@@ -197,7 +197,6 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 		arma::cube Cube1(len, 2, num_re);
 		NumericVector act_ind = act.column(ind);
 		NumericVector light_ind = light.column(ind);
-		int tran_ind = tran_ind_vec(ind);
 		double log_sweight = log_sweights_vec(ind);
 
 		
@@ -205,7 +204,7 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 			NumericVector corr_vec = corr_mat.row(clust_i);
 			NumericVector init_vec = init.row(clust_i);
 
-			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act, emit_light, tran_ind, clust_i, lod_act, lod_light, corr_vec, lintegral_mat, log_sweight);
+			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act, emit_light,clust_i, lod_act, lod_light, corr_vec, lintegral_mat, log_sweight);
 
 		}
 
@@ -215,7 +214,7 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 }
 
 // [[Rcpp::export]]
-List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, cube emit_act, cube emit_light, NumericVector tran_ind_vec, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat){
+List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, cube emit_act, cube emit_light, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat){
 
 	int num_people = act.ncol();
 	int len = act.nrow();
@@ -226,12 +225,11 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 		arma::cube Cube1(len, 2, num_re);
 		NumericVector act_ind = act.column(ind);
 		NumericVector light_ind = light.column(ind);
-		int tran_ind = tran_ind_vec(ind);
 		
 		for (int clust_i = 0; clust_i < num_re; clust_i++){
 			NumericVector corr_vec = corr_mat.row(clust_i);
 
-			Cube1.slice(clust_i) = BackwardIndC(act_ind, light_ind, tran_list, emit_act, emit_light, tran_ind, clust_i, lod_act, lod_light, corr_vec, lintegral_mat);
+			Cube1.slice(clust_i) = BackwardIndC(act_ind, light_ind, tran_list, emit_act, emit_light, clust_i, lod_act, lod_light, corr_vec, lintegral_mat);
 
 		}
 
@@ -242,7 +240,7 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 
 
 // [[Rcpp::export]]
-cube CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, NumericVector tran_ind_vec, cube emit_act, cube emit_light, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, vec pi_l){
+cube CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, cube emit_act, cube emit_light, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, vec pi_l){
   int num_people = act.ncol();
   int len = act.nrow();
   int num_re = emit_act.n_slices;
@@ -255,9 +253,7 @@ cube CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMa
 	NumericVector corr_vec = corr_mat.row(clust_i);
 
     for (int ind = 0; ind < num_people; ind++) {
-      
-      int tran_ind = tran_ind_vec(ind);
-	  mat tran_mat = tran_list_mat(tran_ind-1);
+	  mat tran_mat = tran_list_mat(clust_i);
 	  
 
 	  //0,0->0 & 1,0->1 & 0,1->2 & 1,1->3
