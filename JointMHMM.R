@@ -11,7 +11,7 @@ real_data <- F
 set_seed <- T
 
 sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
-if (is.na(sim_num)){sim_num <- 9}
+if (is.na(sim_num)){sim_num <- 99}
 if (set_seed){set.seed(sim_num)}
 
 RE_num <- as.numeric(commandArgs(TRUE)[1])
@@ -19,7 +19,7 @@ sim_size <- as.numeric(commandArgs(TRUE)[2])
 RE_type <- as.character(commandArgs(TRUE)[3])
 print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",RE_num))
 
-if(is.na(RE_num)){RE_num <- 2}
+if(is.na(RE_num)){RE_num <- 3}
 if(is.na(sim_size)){sim_size <- 0}
 if(is.na(RE_type)){RE_type <- "norm"}
 
@@ -597,6 +597,7 @@ IndLike <- function(alpha,pi_l,ind,len){
 
 ################## EM Setup ################## 
 
+###### True Settings ###### 
 day_length <- 96 
 num_of_people <- 1000
 missing_perc <- .2
@@ -641,23 +642,35 @@ act <- simulated_hmm[[2]]
 light <- simulated_hmm[[3]]
 covar_vec <- simulated_hmm[[4]]
 
-init <- init_true  + runif(6)
-params_tran <- params_tran_true  + runif(18)
+###### Initial Settings ###### 
 
-tran_list <- lapply(c(1:num_re),TranByTimeVec, params_tran = params_tran, time_vec = c(1:96))
+init <- matrix(rep(.5,RE_num*2),ncol = 2)
+params_tran <- matrix(rep(c(-3,.9,.1,-2.2,-.75,.5),RE_num),ncol = 6,byrow = T) + runif(6*RE_num)
+
+tran_list <- lapply(c(1:RE_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:96))
 
 
-emit_act <- emit_act_true + runif(12)
+emit_act <- array(NA, c(2,2,RE_num))
+emit_act[1,1,] <- seq(1.5,3,length.out = RE_num)
+emit_act[1,2,] <- 1
+emit_act[2,1,] <- seq(0,1,length.out = RE_num)
+emit_act[2,2,] <- 1
 
-emit_light <- emit_light_true  + runif(12)
 
-corr_mat <- corr_mat_true + runif(6,-.29,.19)
+emit_light <- array(NA, c(2,2,RE_num))
+emit_light[1,1,] <- seq(6,8,length.out = RE_num)
+emit_light[1,2,] <- 1
+emit_light[2,1,] <- seq(0,3,length.out = RE_num)
+emit_light[2,2,] <- 1
+
+
+corr_mat <- matrix(rep(0,RE_num*2),ncol = 2)
 lod_act <- lod_act_true
 lod_light <- lod_light_true
 
 log_sweights_vec <- numeric(dim(act)[2])
 time_vec <- c()
-pi_l <- rep(1/num_re,num_re)
+pi_l <- rep(1/RE_num,RE_num)
 
 
 # emit_act <- emit_act_true
@@ -693,12 +706,14 @@ while(abs(like_diff) > 1e-3*1e-10){
   
   start_time <- Sys.time()
   likelihood <- new_likelihood
+  
+  ##### MC Param  #####
 
   init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
   params_tran <- CalcTranC(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_mat,covar_mat_tran,pi_l,lod_act,lod_light,lintegral_mat)
-  tran_list <- lapply(c(1:num_re),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
+  # tran_list <- lapply(c(1:RE_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
   
-  ################## Weights
+  ##### Weights  #####
   weights_array_list <- CondMarginalize(alpha,beta,pi_l)
                             
   weights_array_wake <- exp(weights_array_list[[1]])
@@ -715,14 +730,14 @@ while(abs(like_diff) > 1e-3*1e-10){
   # dim(weights_array_wake)[3] <- 1
   # dim(weights_array_sleep)[3] <- 1
   
-  ################## RE
+  ##### Mixing Proportion  #####
   
   re_prob <- CalcProbRE(alpha,pi_l)
   pi_l <- colSums(re_prob)/dim(act)[2]
   pi_l[pi_l<1e-100] <- 1e-100
   if (RE_num <= 1){pi_l <- c(1)}
   
-  ################## Reorder
+  ##### Bivariate Normal Est  #####
   
   corr_mat[,1] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   corr_mat[,2] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
@@ -739,16 +754,22 @@ while(abs(like_diff) > 1e-3*1e-10){
   emit_light[1,2,] <- UpdateNorm(CalcLightSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   emit_light[2,2,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   
+  ##### Reorder #####
   #Reorder to avoid label switching
   #Cluster means go from small to large by activity
-  if (length(pi_l)>1){
-    reord_inds <- order(emit_act[1,1,])
-    emit_act <- emit_act[,,reord_inds]
-    emit_light <- emit_light[,,reord_inds]
-    pi_l <- pi_l[reord_inds]
-    params_tran <- params_tran[reord_inds,]
-  }
   
+  reord_inds <- order(emit_act[1,1,])
+  emit_act <- emit_act[,,reord_inds]
+  emit_light <- emit_light[,,reord_inds]
+  pi_l <- pi_l[reord_inds]
+  params_tran <- params_tran[reord_inds,]
+  corr_mat <- corr_mat[reord_inds,]
+  init <- init[reord_inds,]
+  
+  ##### #####
+
+  # Calculate tran_list after reordering 
+  tran_list <- lapply(c(1:RE_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
   lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
   
   alpha <- ForwardC(act = act,light = light,
@@ -774,4 +795,6 @@ while(abs(like_diff) > 1e-3*1e-10){
   
   
 }
+
+  
 
