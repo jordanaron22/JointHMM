@@ -15,18 +15,16 @@ if (is.na(sim_num)){sim_num <- 99}
 if (set_seed){set.seed(sim_num)}
 
 RE_num <- as.numeric(commandArgs(TRUE)[1])
-sim_size <- as.numeric(commandArgs(TRUE)[2])
-RE_type <- as.character(commandArgs(TRUE)[3])
-print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",RE_num))
+# sim_size <- as.numeric(commandArgs(TRUE)[2])
+# RE_type <- as.character(commandArgs(TRUE)[3])
+# print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",RE_num))
+print(paste("Sim Seed:",sim_num,"HMM Num:",RE_num))
 
 if(is.na(RE_num)){RE_num <- 3}
-if(is.na(sim_size)){sim_size <- 0}
-if(is.na(RE_type)){RE_type <- "norm"}
+# if(is.na(sim_size)){sim_size <- 0}
+# if(is.na(RE_type)){RE_type <- "norm"}
 
-################## Functions ################## 
-
-sourceCpp( "cFunctions.cpp" )
-
+################## Functions ##################
 readCpp <- function(path) {
   tryCatch(
     {
@@ -224,14 +222,6 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
       light[i] <-act_light[2]
     }
     
-    act_missing_ind <- rbinom(day_length,1,missing_perc)
-    light_missing_ind <- rbinom(day_length,1,missing_perc)
-    
-    activity[act_missing_ind==1] <- NA
-    light[light_missing_ind==1] <- NA
-    
-    
-    
     if (ind == 1){
       hidden_states_matrix <- hidden_states
       activity_matrix <- activity
@@ -242,11 +232,55 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
       light_matrix <- cbind(light_matrix,light)
     }
   }
+  
+  init_emp <- init
+  params_tran_emp <- params_tran
+  emit_act_emp <- emit_act
+  emit_light_emp <- emit_light
+  corr_mat_emp <- corr_mat
+  pi_l_emp <- pi_l
+  
+  for (re_ind in 1:mixture_num){
+    covar_indicator <- (covar_vec == re_ind)
+    act_covar <- activity_matrix[,covar_indicator]
+    light_covar <- light_matrix[,covar_indicator]
+    mc_wake_covar <- hidden_states_matrix[,covar_indicator]==0
+    mc_sleep_covar <- hidden_states_matrix[,covar_indicator]==1
+    
+    init_emp[re_ind,1] <- sum(mc_wake_covar[1,])/length(mc_wake_covar[1,])
+    init_emp[re_ind,2] <- 1 - init_emp[re_ind,1] 
+    
+    emit_act_emp[1,1,re_ind] <- mean(act_covar[mc_wake_covar])
+    emit_act_emp[1,2,re_ind]  <- sqrt(var(act_covar[mc_wake_covar]))
+    emit_act_emp[2,1,re_ind]  <- mean(act_covar[mc_sleep_covar])
+    emit_act_emp[2,2,re_ind]  <- sqrt(var(act_covar[mc_sleep_covar]))
+    
+    emit_light_emp[1,1,re_ind] <- mean(light_covar[mc_wake_covar])
+    emit_light_emp[1,2,re_ind] <- sqrt(var(light_covar[mc_wake_covar]))
+    emit_light_emp[2,1,re_ind] <- mean(light_covar[mc_sleep_covar])
+    emit_light_emp[2,2,re_ind] <- sqrt(var(light_covar[mc_sleep_covar]))
+    
+    corr_mat_emp[re_ind,1] <- cor(act_covar[mc_wake_covar],light_covar[mc_wake_covar])
+    corr_mat_emp[re_ind,2] <- cor(act_covar[mc_sleep_covar],light_covar[mc_sleep_covar])
+    
+    pi_l_emp[re_ind] <- sum(covar_indicator)/num_of_people
+  }
+  
+  emp_params <- list(init_emp,params_tran_emp,emit_act_emp,
+                    emit_light_emp,corr_mat_emp,pi_l_emp)
 
   light_matrix[light_matrix<lod_light] <- lod_light
   activity_matrix[activity_matrix<lod_act] <- lod_act
   
-  return(list(hidden_states_matrix,activity_matrix,light_matrix,covar_vec))
+  act_missing <- matrix(rbinom(day_length * num_of_people,1,missing_perc),
+                        ncol = num_of_people)
+  light_missing <- matrix(rbinom(day_length * num_of_people,1,missing_perc),
+                          ncol = num_of_people)
+  
+  activity_matrix[act_missing==1] <- NA
+  light_missing[light_missing==1] <- NA
+  
+  return(list(hidden_states_matrix,activity_matrix,light_matrix,covar_vec,emp_params))
 }
 
 CondMarginalize <- function(alpha,beta,pi_l){
@@ -595,12 +629,24 @@ IndLike <- function(alpha,pi_l,ind,len){
   return(likelihood)
 }
 
+CalcBIC <- function(new_likelihood,RE_num,act,light){
+  
+  #init tran emit pi
+  num_of_param <- RE_num + RE_num*6 + RE_num*4*2 + RE_num*2 + (RE_num-1)
+  
+  bic <- num_of_param * log(sum(!is.na(act)) + sum(!is.na(light))) - (2 * new_likelihood)
+  return(bic)
+}
+
+readCpp( "cFunctions.cpp" )
+readCpp( "../Rcode/cFunctions.cpp" )
+
 ################## EM Setup ################## 
 
 ###### True Settings ###### 
-day_length <- 96 
-num_of_people <- 1000
-missing_perc <- .2
+day_length <- 96 * 5
+num_of_people <- 600
+missing_perc <- .1
 
 init_true <- matrix(c(.15,.85,.3,.7,.4,.6),ncol = 2,byrow = T)
 params_tran_true <- matrix(c(-3,.9,.1,-2.2,-.75,.5,
@@ -627,11 +673,11 @@ emit_light_true[,,3] <- emit_light3
 
 corr_mat_true <- matrix(c(.6,.8,
                           -.5,-.7,
-                          .4,.55),ncol = 2,byrow = T)
+                          -.4,.55),ncol = 2,byrow = T)
 
 lod_act_true <- 0
 lod_light_true <- 0
-pi_l_true <- c(.2,.5,.3)
+pi_l_true <- c(.32,.33,.34)
 simulated_hmm <- SimulateHMM(day_length,num_of_people,
                               init=init_true,params_tran = params_tran_true,
                               emit_act = emit_act_true,emit_light = emit_light_true,corr_mat = corr_mat_true,
@@ -642,6 +688,15 @@ act <- simulated_hmm[[2]]
 light <- simulated_hmm[[3]]
 covar_vec <- simulated_hmm[[4]]
 
+emp_params <- simulated_hmm[[5]]
+
+init_emp <- emp_params[[1]]
+params_tran_emp <- emp_params[[2]]
+emit_act_emp <- emp_params[[3]]
+emit_light_emp <- emp_params[[4]]
+corr_mat_emp <- emp_params[[5]]
+pi_l_emp <- emp_params[[6]]
+
 ###### Initial Settings ###### 
 
 init <- matrix(rep(.5,RE_num*2),ncol = 2)
@@ -651,7 +706,7 @@ tran_list <- lapply(c(1:RE_num),TranByTimeVec, params_tran = params_tran, time_v
 
 
 emit_act <- array(NA, c(2,2,RE_num))
-emit_act[1,1,] <- seq(1.5,3,length.out = RE_num)
+emit_act[1,1,] <- seq(1,5,length.out = RE_num)
 emit_act[1,2,] <- 1
 emit_act[2,1,] <- seq(0,1,length.out = RE_num)
 emit_act[2,2,] <- 1
@@ -673,11 +728,12 @@ time_vec <- c()
 pi_l <- rep(1/RE_num,RE_num)
 
 
-# emit_act <- emit_act_true
-# dim(emit_act)[3] <- 1
-# emit_light <- emit_light_true
-# dim(emit_light)[3] <- 1
-# pi_l <- c(1)
+init <- init_emp
+params_tran <- params_tran_emp
+emit_act <- emit_act_emp
+emit_light <- emit_light_emp
+corr_mat <- corr_mat_emp
+pi_l <- pi_l_emp
 
 ################## EM ################## 
 
@@ -702,7 +758,7 @@ like_diff <- new_likelihood - likelihood
 
 # apply(alpha[[1]][,,1]+beta[[1]][,,1],1,logSumExp)
 
-while(abs(like_diff) > 1e-3*1e-10){
+while(abs(like_diff) > 1e-4){
   
   start_time <- Sys.time()
   likelihood <- new_likelihood
@@ -757,14 +813,15 @@ while(abs(like_diff) > 1e-3*1e-10){
   ##### Reorder #####
   #Reorder to avoid label switching
   #Cluster means go from small to large by activity
-  
-  reord_inds <- order(emit_act[1,1,])
-  emit_act <- emit_act[,,reord_inds]
-  emit_light <- emit_light[,,reord_inds]
-  pi_l <- pi_l[reord_inds]
-  params_tran <- params_tran[reord_inds,]
-  corr_mat <- corr_mat[reord_inds,]
-  init <- init[reord_inds,]
+  if (RE_num > 1){
+    reord_inds <- order(emit_act[1,1,])
+    emit_act <- emit_act[,,reord_inds]
+    emit_light <- emit_light[,,reord_inds]
+    pi_l <- pi_l[reord_inds]
+    params_tran <- params_tran[reord_inds,]
+    corr_mat <- corr_mat[reord_inds,]
+    init <- init[reord_inds,]
+  }
   
   ##### #####
 
@@ -795,6 +852,20 @@ while(abs(like_diff) > 1e-3*1e-10){
   
   
 }
+
+true_params <- list(init_true,params_tran_true,emit_act_true,
+                   emit_light_true,corr_mat_true,pi_l_true)
+
+emp_params <- list(init_emp,params_tran_emp,emit_act_emp,
+                   emit_light_emp,corr_mat_emp,pi_l_emp)
+
+est_params <- list(init,params_tran,emit_act,
+                   emit_light,corr_mat,pi_l)
+
+bic <- CalcBIC(new_likelihood,RE_num,act,light)
+to_save <- list(true_params,emp_params,est_params,bic)
+
+save(to_save,file = paste0("MHMM",RE_num,"Seed",sim_num,".rda"))
 
   
 
