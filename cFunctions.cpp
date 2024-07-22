@@ -134,7 +134,7 @@ double logSumExpC(const arma::vec& x) {
 }
 
 // [[Rcpp::export]]
-mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act, cube emit_light,int clust_i, double lod_act, double lod_light, NumericVector corr_vec, mat lintegral_mat, double log_sweight){
+mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act, cube emit_light,int clust_i, double lod_act, double lod_light, NumericVector corr_vec, vec beta_vec, int event, double bline, double cbline, mat lintegral_mat, double log_sweight){
 
 	mat alpha( act_ind.length(), 2 );
 
@@ -142,8 +142,10 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 
 	vec log_class_1 = logClassificationC( act_ind, light_ind, emit_act(1,0,clust_i), emit_act(1,1,clust_i), emit_light(1,0,clust_i), emit_light(1,1,clust_i), lod_act, lod_light, corr_vec(1), lintegral_mat(clust_i,1));
 
-	alpha(0,0) = log(init(0)) + log_class_0[0];
-	alpha(0,1) = log(init(1)) + log_class_1[0];
+	double surv_comp = event * log(bline) + beta_vec[clust_i] - cbline * exp(beta_vec[clust_i]);
+
+	alpha(0,0) = log(init(0)) + log_class_0[0] + surv_comp;
+	alpha(0,1) = log(init(1)) + log_class_1[0] + surv_comp;
 	
 	List tran_time_list = tran_list[clust_i]; 
 	
@@ -210,7 +212,7 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
 }
 
 // [[Rcpp::export]]
-List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light,double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, NumericVector log_sweights_vec){
+List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light,double lod_act, double lod_light, NumericMatrix corr_mat, vec beta_vec, vec event_vec, vec bline_vec, vec cbline_vec, mat lintegral_mat, NumericVector log_sweights_vec){
 	int num_people = act.ncol();
 	int len = act.nrow();
 	int num_re = emit_act.n_slices;
@@ -227,7 +229,7 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 			NumericVector corr_vec = corr_mat.row(clust_i);
 			NumericVector init_vec = init.row(clust_i);
 
-			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act, emit_light,clust_i, lod_act, lod_light, corr_vec, lintegral_mat, log_sweight);
+			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act, emit_light,clust_i, lod_act, lod_light, corr_vec, beta_vec, event_vec[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, log_sweight);
 
 		}
 

@@ -4,6 +4,7 @@ library(Rcpp)
 library(RcppArmadillo)
 library(matrixStats)
 library(MASS)
+library(survival)
 
 RE_type <- "norm"
 
@@ -184,8 +185,37 @@ SimulateMC <- function(day_length,init,tran_list_ind,covar_ind){
   return(hidden_states)
 }
 
+finv <- function(lam,time, randu, xb_ind){
+  return((1-pexp(time,rate = lam))^(exp(xb_ind)) - randu)
+}
+
+#No censoring as of now
+SimSurvival <- function(covar_mat,beta_vec,lam = 1/20){
+  
+  num_of_people <- dim(covar_mat)[1]
+  xb <- covar_mat %*% beta_vec
+  
+  failure_times <- numeric(num_of_people)
+  censor_times <- numeric(num_of_people)
+  
+  
+  for(i in 1:num_of_people){
+    evnt<-runif(1)
+    cens<-runif(1)
+    failure_times[i] <- uniroot(finv, interval=c(0, 60), lam=lam, randu=evnt, xb_ind=xb[i], extendInt = "yes")$root
+    censor_times[i] <- uniroot(finv, interval=c(0, 60), lam=lam, randu=cens, xb_ind=xb[i], extendInt = "yes")$root
+    
+  }
+  
+  time <- pmin(failure_times, censor_times)
+  # event <- as.integer(failure_times<censor_times)
+  event <- rep(1,num_of_people)
+  
+  return(list(time,event))
+}
+
 SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
-                        emit_light,corr_mat,lod_act,lod_light, pi_l,missing_perc){
+                        emit_light,corr_mat,lod_act,lod_light, pi_l,beta_vec_true,missing_perc){
   mixture_num <- dim(emit_act)[3]
   
   covar_mat <- t(rmultinom(num_of_people,1,pi_l_true))
@@ -266,8 +296,13 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
     pi_l_emp[re_ind] <- sum(covar_indicator)/num_of_people
   }
   
+  surv_list <- SimSurvival(covar_mat,beta_vec_true)
+  cph_fit <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~ covar_mat[,2] + covar_mat[,3] )
+  beta_vec_emp <- c(0,summary(cph_fit)$coefficients[,1])
+  
   emp_params <- list(init_emp,params_tran_emp,emit_act_emp,
-                    emit_light_emp,corr_mat_emp,pi_l_emp)
+                     emit_light_emp,corr_mat_emp,pi_l_emp,beta_vec_emp)
+  
 
   light_matrix[light_matrix<lod_light] <- lod_light
   activity_matrix[activity_matrix<lod_act] <- lod_act
@@ -280,7 +315,9 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran,emit_act,
   activity_matrix[act_missing==1] <- NA
   light_missing[light_missing==1] <- NA
   
-  return(list(hidden_states_matrix,activity_matrix,light_matrix,covar_vec,emp_params))
+
+  
+  return(list(hidden_states_matrix,activity_matrix,light_matrix,covar_mat,emp_params,surv_list))
 }
 
 CondMarginalize <- function(alpha,beta,pi_l){
@@ -638,15 +675,39 @@ CalcBIC <- function(new_likelihood,RE_num,act,light){
   return(bic)
 }
 
+CalcBLHaz <- function(beta_vec, re_prob){
+  sort_order <- order(surv_time)
+  og_surv_time <- surv_time
+  
+  sort_time <- surv_time[sort_order]
+  sort_event <- surv_event[sort_order]
+  
+  bline_vec <- numeric(num_of_people)
+  for (time_ind in 1:num_of_people){
+    risk_set <- c(time_ind:num_of_people)
+    bline_vec[time_ind] <- sort_event[time_ind]/sum(re_prob[risk_set,] %*% exp(beta_vec))
+  }
+  cbline_vec <- cumsum(bline_vec)
+  
+  bline_vec_us <- numeric(num_of_people)
+  cbline_vec_us <- numeric(num_of_people)
+  for (i in 1:num_of_people){
+    bline_vec_us[i] <- bline_vec[sort_order[i]]
+    cbline_vec_us[i] <- cbline_vec[sort_order[i]]
+  }
+  
+  return(list(bline_vec_us,cbline_vec_us))
+}
+
 readCpp( "cFunctions.cpp" )
 readCpp( "../Rcode/cFunctions.cpp" )
 
 ################## EM Setup ################## 
 
 ###### True Settings ###### 
-day_length <- 96 * 5
-num_of_people <- 600
-missing_perc <- .1
+day_length <- 96 * 2
+num_of_people <- 1000
+missing_perc <- 0
 
 init_true <- matrix(c(.15,.85,.3,.7,.4,.6),ncol = 2,byrow = T)
 params_tran_true <- matrix(c(-3,.9,.1,-2.2,-.75,.5,
@@ -675,20 +736,27 @@ corr_mat_true <- matrix(c(.6,.8,
                           -.5,-.7,
                           -.4,.55),ncol = 2,byrow = T)
 
+beta_vec_true <- c(0,.65,1)
+
 lod_act_true <- 0
 lod_light_true <- 0
 pi_l_true <- c(.32,.33,.34)
 simulated_hmm <- SimulateHMM(day_length,num_of_people,
                               init=init_true,params_tran = params_tran_true,
                               emit_act = emit_act_true,emit_light = emit_light_true,corr_mat = corr_mat_true,
-                              lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true,missing_perc = missing_perc)
+                              lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true,
+                              missing_perc = missing_perc, beta_vec_true = beta_vec_true)
 
 mc <- simulated_hmm[[1]]
 act <- simulated_hmm[[2]]
 light <- simulated_hmm[[3]]
-covar_vec <- simulated_hmm[[4]]
+covar_mat <- simulated_hmm[[4]]
 
 emp_params <- simulated_hmm[[5]]
+surv_list <- simulated_hmm[[6]]
+
+surv_time <- surv_list[[1]]
+surv_event <- surv_list[[2]]
 
 init_emp <- emp_params[[1]]
 params_tran_emp <- emp_params[[2]]
@@ -696,7 +764,7 @@ emit_act_emp <- emp_params[[3]]
 emit_light_emp <- emp_params[[4]]
 corr_mat_emp <- emp_params[[5]]
 pi_l_emp <- emp_params[[6]]
-
+beta_vec_emp <- emp_params[[7]]
 ###### Initial Settings ###### 
 
 init <- matrix(rep(.5,RE_num*2),ncol = 2)
@@ -734,8 +802,13 @@ emit_act <- emit_act_emp
 emit_light <- emit_light_emp
 corr_mat <- corr_mat_emp
 pi_l <- pi_l_emp
+beta_vec <- beta_vec_emp
 
 ################## EM ################## 
+re_prob_pre_data <- matrix(rep(pi_l,num_of_people),ncol = length(pi_l),byrow = T)
+bhaz_vec <- CalcBLHaz(beta_vec,re_prob_pre_data)
+bline_vec <- bhaz_vec[[1]]
+cbline_vec <- bhaz_vec[[2]]
 
 lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
 
@@ -743,7 +816,9 @@ alpha <- ForwardC(act = act,light = light,
          init = init,tran_list = tran_list,
          emit_act = emit_act,emit_light = emit_light,
          lod_act = lod_act, lod_light =  lod_light, 
-         corr_mat = corr_mat,lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]))
+         corr_mat = corr_mat, beta_vec = beta_vec,
+         event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
+         lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]))
 
 beta <- BackwardC(act = act,light = light, tran_list = tran_list,
               emit_act = emit_act,emit_light = emit_light,
@@ -810,6 +885,12 @@ while(abs(like_diff) > 1e-4){
   emit_light[1,2,] <- UpdateNorm(CalcLightSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   emit_light[2,2,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   
+  ##### Survival ####
+  
+  #update beta_vec
+  bhaz_vec <- CalcBLHaz(beta_vec,re_prob)
+  
+  
   ##### Reorder #####
   #Reorder to avoid label switching
   #Cluster means go from small to large by activity
@@ -818,6 +899,7 @@ while(abs(like_diff) > 1e-4){
     emit_act <- emit_act[,,reord_inds]
     emit_light <- emit_light[,,reord_inds]
     pi_l <- pi_l[reord_inds]
+    re_prob <- re_prob[,reord_inds]
     params_tran <- params_tran[reord_inds,]
     corr_mat <- corr_mat[reord_inds,]
     init <- init[reord_inds,]
@@ -833,7 +915,9 @@ while(abs(like_diff) > 1e-4){
                     init = init,tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
                     lod_act = lod_act, lod_light =  lod_light, 
-                    corr_mat = corr_mat,lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec)
+                    corr_mat = corr_mat, beta_vec = beta_vec,
+                    event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
+                    lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]))
   
   beta <- BackwardC(act = act,light = light, tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
@@ -850,9 +934,7 @@ while(abs(like_diff) > 1e-4){
   end_time <- Sys.time()
   time_vec <- c(time_vec,as.numeric(difftime(end_time, start_time, units = "secs")))
   
-  
 }
-
 true_params <- list(init_true,params_tran_true,emit_act_true,
                    emit_light_true,corr_mat_true,pi_l_true)
 
@@ -867,5 +949,9 @@ to_save <- list(true_params,emp_params,est_params,bic)
 
 save(to_save,file = paste0("MHMM",RE_num,"Seed",sim_num,".rda"))
 
+
+
   
+
+
 
