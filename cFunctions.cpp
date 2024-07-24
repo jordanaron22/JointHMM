@@ -142,7 +142,14 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 
 	vec log_class_1 = logClassificationC( act_ind, light_ind, emit_act(1,0,clust_i), emit_act(1,1,clust_i), emit_light(1,0,clust_i), emit_light(1,1,clust_i), lod_act, lod_light, corr_vec(1), lintegral_mat(clust_i,1));
 
-	double surv_comp = event * log(bline) + beta_vec[clust_i] - cbline * exp(beta_vec[clust_i]);
+
+	double surv_comp;
+
+	if (event == 1){
+		surv_comp = log(bline) + beta_vec[clust_i] - (cbline * exp(beta_vec[clust_i]));
+	} else {
+		surv_comp =  -cbline * exp(beta_vec[clust_i]);
+	}
 
 	alpha(0,0) = log(init(0)) + log_class_0[0] + surv_comp;
 	alpha(0,1) = log(init(1)) + log_class_1[0] + surv_comp;
