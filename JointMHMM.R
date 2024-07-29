@@ -206,9 +206,6 @@ SimSurvival <- function(covar_mat,beta_vec,lam = 1/20){
   time <- pmin(failure_times, censor_times)
   event <- as.integer(failure_times<censor_times)
   
-  # time <- failure_times
-  # event <- rep(1,num_of_people)
-  
   return(list(time,event))
 }
 
@@ -674,14 +671,24 @@ CalcBIC <- function(new_likelihood,RE_num,act,light){
 }
 
 CalcBLHaz <- function(beta_vec, re_prob,surv_event){
-
+  
   bline_vec <- numeric(num_of_people)
+  cbline_vec <- numeric(num_of_people)
+  
   for (time_ind in 1:num_of_people){
-    risk_set <- c(time_ind:num_of_people)
+    
+    risk_set <- surv_time >= surv_time[time_ind]
+    # risk_set <- c(time_ind:num_of_people)
     bline_vec[time_ind] <- surv_event[time_ind]/sum(re_prob[risk_set,] %*% exp(beta_vec))
   }
-  cbline_vec <- cumsum(bline_vec)
-
+  
+  for(time_ind in 1:num_of_people){
+    anti_risk_set <- surv_time <= surv_time[time_ind]
+    cbline_vec[time_ind] <- sum(bline_vec[anti_risk_set])
+  }
+  
+  # cbline_vec <- cumsum(bline_vec)
+  
   
   return(list(bline_vec,cbline_vec))
 }
@@ -698,7 +705,9 @@ CalcBeta <- function(beta_vec,re_prob,surv_event){
   
   for (beta_ind in 1:re_num){
     for (ind in 1:num_of_people){
-      risk_set <- c(ind:num_of_people)
+      
+      risk_set <- surv_time >= surv_time[ind]
+      # risk_set <- c(ind:num_of_people)
       
       num <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind]))
       denom <- sum(re_prob[risk_set,] %*% exp(beta_vec))
@@ -729,8 +738,8 @@ readCpp( "../Rcode/cFunctions.cpp" )
 ################## EM Setup ################## 
 
 ###### True Settings ###### 
-day_length <- 96 * 2
-num_of_people <- 2000
+day_length <- 96 * 1
+num_of_people <- 1000
 missing_perc <- .1
 
 init_true <- matrix(c(.15,.85,.3,.7,.4,.6),ncol = 2,byrow = T)
@@ -793,21 +802,21 @@ corr_mat_emp <- emp_params[[5]]
 pi_l_emp <- emp_params[[6]]
 beta_vec_emp <- emp_params[[7]]
 
-surv_order <- order(surv_time)
-surv_time <- surv_time[surv_order]
-surv_event <- surv_event[surv_order]
-
-mc <- mc[,surv_order]
-act <- act[,surv_order]
-light <- light[,surv_order]
-covar_mat <- covar_mat[surv_order,]
+# surv_order <- order(surv_time)
+# surv_time <- surv_time[surv_order]
+# surv_event <- surv_event[surv_order]
+# 
+# mc <- mc[,surv_order]
+# act <- act[,surv_order]
+# light <- light[,surv_order]
+# covar_mat <- covar_mat[surv_order,]
 
 
 ###### Initial Settings ###### 
 
 init <- matrix(rep(.5,RE_num*2),ncol = 2)
 params_tran <- matrix(rep(c(-3,.9,.1,-2.2,-.75,.5),RE_num),ncol = 6,byrow = T)
-# params_tran[,2:6] <- 0
+params_tran[,2:6] <- 0
 
 runif_tol <- .2
 
@@ -868,7 +877,7 @@ like_diff <- new_likelihood - likelihood
 
 # apply(alpha[[1]][,,1]+beta[[1]][,,1],1,logSumExp)
 # break
-while(abs(like_diff) > 1e-4*1e-10){
+while(abs(like_diff) > 1e-4){
 # for (i in 1:2){
   
   start_time <- Sys.time()
@@ -915,7 +924,7 @@ while(abs(like_diff) > 1e-4*1e-10){
   emit_light[2,2,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   
   ##### Survival ####
-  
+  #What is the correct order of these two? 
   beta_vec <- CalcBeta(beta_vec,re_prob,surv_event)
 
   bhaz_vec <- CalcBLHaz(beta_vec,re_prob,surv_event)
@@ -970,15 +979,22 @@ while(abs(like_diff) > 1e-4*1e-10){
   
 }
 true_params <- list(init_true,params_tran_true,emit_act_true,
-                   emit_light_true,corr_mat_true,pi_l_true)
+                   emit_light_true,corr_mat_true,pi_l_true,
+                   beta_vec_true)
 
 emp_params <- list(init_emp,params_tran_emp,emit_act_emp,
-                   emit_light_emp,corr_mat_emp,pi_l_emp)
+                   emit_light_emp,corr_mat_emp,pi_l_emp,
+                   beta_vec_emp)
 
 est_params <- list(init,params_tran,emit_act,
-                   emit_light,corr_mat,pi_l)
+                   emit_light,corr_mat,pi_l,
+                   beta_vec,bhaz_vec)
 
 bic <- CalcBIC(new_likelihood,RE_num,act,light)
 to_save <- list(true_params,emp_params,est_params,bic)
 
-# save(to_save,file = paste0("MHMM",RE_num,"Seed",sim_num,".rda"))
+if (like_diff > -1){save(to_save,file = paste0("MHMM",RE_num,"Seed",sim_num,".rda"))}
+
+
+
+
