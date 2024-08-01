@@ -9,7 +9,7 @@ library(dplyr)
 
 RE_type <- "norm"
 
-real_data <- F
+real_data <- T
 set_seed <- T
 
 epsilon <- 1e-5
@@ -25,7 +25,7 @@ RE_num <- as.numeric(commandArgs(TRUE)[1])
 # print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",RE_num))
 print(paste("Sim Seed:",sim_num,"HMM Num:",RE_num))
 
-if(is.na(RE_num)){RE_num <- 3}
+if(is.na(RE_num)){RE_num <- 2}
 # if(is.na(sim_size)){sim_size <- 0}
 # if(is.na(RE_type)){RE_type <- "norm"}
 
@@ -705,6 +705,31 @@ SurvLike <- function(beta_vec,re_prob,surv_event,bline_vec,cbline_vec){
   return(sum(log(bline_vec^surv_event) + (re_prob %*% beta_vec) * surv_event - cbline_vec*exp(re_prob %*% beta_vec)))
 }
 
+SurvLikeOpt <- function(x){
+  beta_vec <- c(0,x)
+  return(-SurvLike(beta_vec,re_prob,surv_event,bline_vec,cbline_vec))
+}
+
+BetaGrad <- function(x){
+  beta_vec <- c(0,x)
+  grad <- numeric(RE_num)
+  
+  for (beta_ind in 2:RE_num){
+    for (ind in which(surv_event == 1)){
+      
+      risk_set <- surv_time >= surv_time[ind]
+      
+      num <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind]))
+      denom <- sum(re_prob[risk_set,] %*% exp(beta_vec))
+      
+      grad[beta_ind] <- grad[beta_ind] + surv_event[ind] * (re_prob[ind,beta_ind] - num/denom)
+      
+    }
+  }
+  return(grad[2:RE_num])
+  
+}
+
 CalcBeta <- function(beta_vec,re_prob,surv_event,surv_time){
   
   re_num <- length(beta_vec)
@@ -733,27 +758,27 @@ CalcBeta <- function(beta_vec,re_prob,surv_event,surv_time){
     
     
     
-    ## N-R
-    # gradient <- grad[2:re_num]
-    # if(re_num == 2){hessian = hess[2:re_num]
-    # } else {hessian <- diag(hess[2:re_num])}
-    # 
-    # inf_fact <- solve(-hessian,-gradient)
-    # if(any(abs(inf_fact)> 2) ){inf_fact <- inf_fact/max(abs(inf_fact))}
-    # beta_vec_new <- beta_vec[2:re_num] - inf_fact
-    # beta_vec_new <- c(0,beta_vec_new)
-    
-    step_size <- 1
-    old_like <- SurvLike(beta_vec,re_prob,surv_event,bline_vec,cbline_vec)
-    new_like <- -Inf
-    counter <- 1
-    while (new_like < old_like){
-      beta_vec_new <- beta_vec - grad*step_size 
-      new_like <- SurvLike(beta_vec_new,re_prob,surv_event,bline_vec,cbline_vec)
-      step_size <- step_size/2
-      counter <- counter + 1
-      if(counter %% 100 == 0){print(counter)}
-    }
+    # N-R
+    gradient <- grad[2:re_num]
+    if(re_num == 2){hessian = hess[2:re_num]
+    } else {hessian <- diag(hess[2:re_num])}
+
+    inf_fact <- solve(-hessian,-gradient)
+    if(any(abs(inf_fact)> 2) ){inf_fact <- inf_fact/max(abs(inf_fact))}
+    beta_vec_new <- beta_vec[2:re_num] - inf_fact
+    beta_vec_new <- c(0,beta_vec_new)
+
+    # step_size <- 1
+    # old_like <- SurvLike(beta_vec,re_prob,surv_event,bline_vec,cbline_vec)
+    # new_like <- -Inf
+    # counter <- 1
+    # while (new_like < old_like){
+    #   beta_vec_new <- beta_vec - grad*step_size 
+    #   new_like <- SurvLike(beta_vec_new,re_prob,surv_event,bline_vec,cbline_vec)
+    #   step_size <- step_size/2
+    #   counter <- counter + 1
+    #   if(counter %% 100 == 0){print(counter)}
+    # }
     
     
     
@@ -773,7 +798,7 @@ readCpp( "../Rcode/cFunctions.cpp" )
 
 ###### True Settings ###### 
 day_length <- 96 * 1
-num_of_people <- 1000
+num_of_people <- 3000
 missing_perc <- .1
 
 init_true <- matrix(NA,ncol = 2,nrow = RE_num)
@@ -798,7 +823,8 @@ emit_light_true[2,2,] <- seq(1,2,length.out = RE_num)
 
 corr_mat_true <- matrix(0,ncol = 2,nrow = RE_num)
 
-beta_vec_true <- c(0,seq(-.55,.5,length.out = RE_num-1))
+beta_vec_true <- c(0,seq(-.75,1,length.out = RE_num-1))
+beta_vec_true <- rep(0,RE_num)
 
 lod_act_true <- 0
 lod_light_true <- 0
@@ -898,6 +924,13 @@ if (!real_data){
 
   #need to initialize starting values
   
+  # num_of_people <- 2000
+  # act <- act[,1:num_of_people]
+  # light <- light[,1:num_of_people]
+  # surv_event <- surv_event[1:num_of_people]
+  # surv_time <- surv_time[1:num_of_people]
+  
+  
 }
 
 
@@ -968,8 +1001,10 @@ like_diff <- new_likelihood - likelihood
 
 # apply(alpha[[1]][,,1]+beta[[1]][,,1],1,logSumExp)
 # break
+beta_counter <- 0
+beta_bool <- F
 while(abs(like_diff) > 1e-4){
-# for (i in 1:3){
+# for (i in 1:15){
   
   start_time <- Sys.time()
   likelihood <- new_likelihood
@@ -1015,12 +1050,14 @@ while(abs(like_diff) > 1e-4){
   emit_light[2,2,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   
   ##### Survival ####
-  #What is the correct order of these two? 
-  beta_vec <- CalcBeta(beta_vec,re_prob,surv_event,surv_time)
-
-  bhaz_vec <- CalcBLHaz(beta_vec,re_prob,surv_event,surv_time)
-  bline_vec <- bhaz_vec[[1]]
-  cbline_vec <- bhaz_vec[[2]]
+  if(beta_bool){
+    beta_vec <- CalcBeta(beta_vec,re_prob,surv_event,surv_time)
+  
+  
+    bhaz_vec <- CalcBLHaz(beta_vec,re_prob,surv_event,surv_time)
+    bline_vec <- bhaz_vec[[1]]
+    cbline_vec <- bhaz_vec[[2]]
+  }
   
   
   ##### Reorder #####
@@ -1091,6 +1128,8 @@ while(abs(like_diff) > 1e-4){
   
   end_time <- Sys.time()
   time_vec <- c(time_vec,as.numeric(difftime(end_time, start_time, units = "secs")))
+  beta_counter <- beta_counter + 1
+  if(beta_counter > 5 & min(surv_event %*% re_prob) > 1e-10){beta_bool <- T}
   
 }
 true_params <- list(init_true,params_tran_true,emit_act_true,
