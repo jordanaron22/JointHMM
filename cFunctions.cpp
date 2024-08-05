@@ -272,53 +272,45 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 
 
 // [[Rcpp::export]]
-cube CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, cube emit_act, cube emit_light, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, vec pi_l){
+mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, cube emit_act, cube emit_light, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, vec pi_l, int clust_i){
   int num_people = act.ncol();
   int len = act.nrow();
-  int num_re = emit_act.n_slices;
-
-  arma::cube tran_vals_re_cube( len-1, num_people, num_re );
-
-  for (int clust_i = 0; clust_i < num_re; clust_i++){
-
-	mat tran_vals_re_mat( len-1, num_people );
-	NumericVector corr_vec = corr_mat.row(clust_i);
-
-    for (int ind = 0; ind < num_people; ind++) {
-	  mat tran_mat = tran_list_mat(clust_i);
-	  
-
-	  //0,0->0 & 1,0->1 & 0,1->2 & 1,1->3
-	  int tran_vec_ind = init_state + (new_state * 2);
-
-	  arma::cube alpha_ind = alpha(ind); 
-	  arma::cube beta_ind = beta(ind);
-	  double likelihood = ind_like_vec(ind);
-	  
-	  NumericMatrix act_ind = act( Range(1,len-1) , Range(ind,ind) );
-	  NumericVector act_ind_m1 = act_ind.column(0); 
-
-	  NumericMatrix light_ind = light( Range(1,len-1) , Range(ind,ind) );
-	  NumericVector light_ind_m1 = light_ind.column(0); 
-	  
-	  vec class_vec = logClassificationC( act_ind_m1, light_ind_m1, emit_act(new_state,0,clust_i), emit_act(new_state,1,clust_i), emit_light(new_state,0,clust_i), emit_light(new_state,1,clust_i), lod_act, lod_light, corr_vec(new_state), lintegral_mat(clust_i,new_state) );
-	  
-	  vec alpha_ind_slice = alpha_ind(span(0,len-2),span(init_state,init_state),span(clust_i,clust_i));
-	  vec beta_ind_slice = beta_ind(span(1,len-1),span(new_state,new_state),span(clust_i,clust_i));
-	  vec tran_vec_slice = tran_mat.col(tran_vec_ind);
-
-	  vec temp = alpha_ind_slice + beta_ind_slice + log(tran_vec_slice) + log(pi_l(clust_i)) + class_vec - likelihood;
-	  vec tran_vals_re_ind = arma::exp(temp);
-
-	  tran_vals_re_mat.col(ind) = tran_vals_re_ind;
-	
-    }
-
-	tran_vals_re_cube.slice(clust_i) = tran_vals_re_mat;
+  
+  mat tran_vals_re_mat( len-1, num_people );
+  NumericVector corr_vec = corr_mat.row(clust_i);
+  
+  for (int ind = 0; ind < num_people; ind++) {
+    mat tran_mat = tran_list_mat(clust_i);
+    
+    
+    //0,0->0 & 1,0->1 & 0,1->2 & 1,1->3
+    int tran_vec_ind = init_state + (new_state * 2);
+    
+    arma::cube alpha_ind = alpha(ind); 
+    arma::cube beta_ind = beta(ind);
+    double likelihood = ind_like_vec(ind);
+    
+    NumericMatrix act_ind = act( Range(1,len-1) , Range(ind,ind) );
+    NumericVector act_ind_m1 = act_ind.column(0); 
+    
+    NumericMatrix light_ind = light( Range(1,len-1) , Range(ind,ind) );
+    NumericVector light_ind_m1 = light_ind.column(0); 
+    
+    vec class_vec = logClassificationC( act_ind_m1, light_ind_m1, emit_act(new_state,0,clust_i), emit_act(new_state,1,clust_i), emit_light(new_state,0,clust_i), emit_light(new_state,1,clust_i), lod_act, lod_light, corr_vec(new_state), lintegral_mat(clust_i,new_state) );
+    
+    vec alpha_ind_slice = alpha_ind(span(0,len-2),span(init_state,init_state),span(clust_i,clust_i));
+    vec beta_ind_slice = beta_ind(span(1,len-1),span(new_state,new_state),span(clust_i,clust_i));
+    vec tran_vec_slice = tran_mat.col(tran_vec_ind);
+    
+    vec temp = alpha_ind_slice + beta_ind_slice + log(tran_vec_slice) + log(pi_l(clust_i)) + class_vec - likelihood;
+    vec tran_vals_re_ind = arma::exp(temp);
+    
+    tran_vals_re_mat.col(ind) = tran_vals_re_ind;
     
   }
+  
 
-  return tran_vals_re_cube;
+  return tran_vals_re_mat;
 }
 
 

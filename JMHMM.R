@@ -9,7 +9,7 @@ library(dplyr)
 
 RE_type <- "norm"
 
-real_data <- T
+real_data <- F
 set_seed <- T
 
 epsilon <- 1e-5
@@ -25,7 +25,7 @@ RE_num <- as.numeric(commandArgs(TRUE)[1])
 # print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",RE_num))
 print(paste("Sim Seed:",sim_num,"HMM Num:",RE_num))
 
-if(is.na(RE_num)){RE_num <- 2}
+if(is.na(RE_num)){RE_num <- 3}
 # if(is.na(sim_size)){sim_size <- 0}
 # if(is.na(RE_type)){RE_type <- "norm"}
 
@@ -61,12 +61,12 @@ logit <- function(x){
   return(log(x/(1-x)))
 }
 
-Params2TranVectorT <- function(re_ind,len,params_tran){
-  return(t(sapply(c(2:(len)),FUN = Params2Tran,params_tran = params_tran,re_ind=re_ind)))
+Params2TranVectorT <- function(re_ind,len,params_tran, weekend_bool = F){
+  return(t(sapply(c(2:(len)),FUN = Params2Tran,params_tran = params_tran,re_ind=re_ind, weekend_bool=weekend_bool)))
 }
 
-TranByTimeVec <- function(re_ind, params_tran, time_vec){
-  return(lapply(time_vec, Params2Tran, params_tran = params_tran,re_ind=re_ind))
+TranByTimeVec <- function(re_ind, params_tran, time_vec,weekend_bool = F){
+  return(lapply(time_vec, Params2Tran, params_tran = params_tran,re_ind=re_ind,weekend_bool))
 }
 
 Param2TranHelper <- function(p12,p21){
@@ -78,11 +78,17 @@ Param2TranHelper <- function(p12,p21){
   return(tran)
 }
 
-Params2Tran <- function(params_tran,time,re_ind){
+Params2Tran <- function(params_tran,time,re_ind,weekend_bool = F){
   
   param_matrix <- matrix(params_tran[re_ind,],ncol=3,nrow=2, byrow = T)
-  tran <- Param2TranHelper(param_matrix[1,1]+param_matrix[1,2]*cos(2*pi*time/96)+param_matrix[1,3]*sin(2*pi*time/96),
-                           param_matrix[2,1]+param_matrix[2,2]*cos(2*pi*time/96)+param_matrix[2,3]*sin(2*pi*time/96))
+  if (weekend_bool){
+    tran <- Param2TranHelper(param_matrix[1,4]+param_matrix[1,5]*cos(2*pi*time/96)+param_matrix[1,6]*sin(2*pi*time/96),
+                             param_matrix[2,4]+param_matrix[2,5]*cos(2*pi*time/96)+param_matrix[2,6]*sin(2*pi*time/96))
+  } else{
+    tran <- Param2TranHelper(param_matrix[1,1]+param_matrix[1,2]*cos(2*pi*time/96)+param_matrix[1,3]*sin(2*pi*time/96),
+                             param_matrix[2,1]+param_matrix[2,2]*cos(2*pi*time/96)+param_matrix[2,3]*sin(2*pi*time/96))
+  }
+    
 
   return(tran)
 }
@@ -397,6 +403,85 @@ CalcProbRE <- function(alpha,pi_l){
   
 }
 
+CalcTranHelperDEP <- function(init_state, new_state, act, light, tran_list_mat, emit_act, 
+                           emit_light, ind_like_vec, alpha, beta, lod_act, lod_light, 
+                           corr_mat, lintegral_mat, pi_l){
+  
+  num_people = dim(act)[2]
+  len = dim(act)[1]
+  num_re = dim(emit_act)[3]
+  
+  tran_vals_re_cube <- array(NA,c(len-1,num_people,num_re))
+  
+  for (clust_i in 1:num_re){
+    
+    tran_vals_re_mat <- matrix(NA, len-1,num_of_people)
+    corr_vec <- corr_mat[clust_i,]
+    
+    for (ind in 1:num_of_people){
+      tran_mat <- tran_list_mat[[clust_i]]
+      
+      
+      #0,0->0 & 1,0->1 & 0,1->2 & 1,1->3
+      tran_vec_ind <- (init_state-1) + ((new_state-1) * 2) + 1
+      
+      alpha_ind <- alpha[[ind]]
+      beta_ind <- beta[[ind]]
+      likelihood <- ind_like_vec[ind]
+      
+      
+      act_ind <- act[2:len,ind]
+      light_ind <- light[2:len,ind]
+      
+      class_vec <- logClassificationC( act_ind, light_ind, emit_act[new_state,1,clust_i], 
+                                       emit_act[new_state,2,clust_i], emit_light[new_state,1,clust_i], 
+                                       emit_light[new_state,2,clust_i], lod_act, lod_light, 
+                                       corr_vec[new_state], lintegral_mat[clust_i,new_state] )
+      
+      alpha_ind_slice <- alpha_ind[1:(len-1),init_state,clust_i]
+      beta_ind_slice <- beta_ind[2:(len),new_state,clust_i]
+      tran_vec_slice <- tran_mat[,tran_vec_ind]
+      
+      tran_vals_re_ind = exp(alpha_ind_slice + beta_ind_slice + log(tran_vec_slice) + log(pi_l[clust_i]) + class_vec - likelihood)
+      
+      tran_vals_re_mat[,ind] = tran_vals_re_ind
+      
+    }
+    
+    tran_vals_re_cube[,,clust_i] = tran_vals_re_mat
+    
+  }
+  
+  return(tran_vals_re_cube)
+}
+
+
+CalcTranHelper <- function(act, light, tran_list_mat, emit_act, 
+                 emit_light, ind_like_vec, alpha, beta, lod_act, lod_light, 
+                 corr_mat, lintegral_mat, pi_l){
+  
+  num_people = dim(act)[2]
+  len = dim(act)[1]
+  num_re = dim(emit_act)[3]
+  
+  tran_vals_re_array <- array(NA,c(2,2,len - 1,num_people,num_re))
+  
+  for(init_state in 1:2){
+    for(new_state in 1:2){
+      for (clust_i in 1:num_re){
+        tran_vals_re_array[init_state,new_state,,,clust_i] <- CalcTranHelperC(init_state = init_state-1, new_state = new_state-1,act = act,
+                                                          light = light,tran_list_mat = tran_list_mat,
+                                                          emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
+                                                          alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
+                                                          corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l,clust_i = clust_i-1)
+      }
+    }
+  }
+  
+  return(tran_vals_re_array)
+}
+
+  
 CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat){
   
   len <- dim(act)[1]
@@ -409,42 +494,21 @@ CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_
   sin_part_vec <- matrix(0,2,re_num)
   cos_sin_part <- matrix(0,2,re_num)
   
-  tran_list_mat <- lapply(c(1:re_num),Params2TranVectorT, len = len, params_tran = params_tran)
+  tran_list_mat <- lapply(c(1:re_num),Params2TranVectorT, len = len, params_tran = params_tran,weekend_bool = F)
+  # tran_weekend_list_mat <- lapply(c(1:re_num),Params2TranVectorT, len = len, params_tran = params_tran,weekend_bool = T)
   ind_like_vec <- unlist(lapply(c(1:length(alpha)),IndLike,alpha = alpha, pi_l = pi_l, len = len))
   
-  tran_vals_re_00 <- CalcTranHelperC(init_state = 0,new_state = 0,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,
-                                     emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
-                                     alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
-                                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
+  tran_vals_re_array <- CalcTranHelper(act = act,
+                                       light = light,tran_list_mat = tran_list_mat,
+                                       emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
+                                       alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
+                                       corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
   
-  tran_vals_re_01 <- CalcTranHelperC(init_state = 0,new_state = 1,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,
-                                     emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
-                                     alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
-                                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
-  
-  tran_vals_re_10 <- CalcTranHelperC(init_state = 1,new_state = 0,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,
-                                     emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
-                                     alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
-                                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
-  
-  tran_vals_re_11 <- CalcTranHelperC(init_state = 1,new_state = 1,act = act,
-                                     light = light,tran_list_mat = tran_list_mat,
-                                     emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
-                                     alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
-                                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l)
   
   for (init_state in 1:2){
     for (new_state in 1:2){
       
-      
-      
-      if (init_state == 1 & new_state == 1){tran_vals <- tran_vals_re_00}
-      if (init_state == 1 & new_state == 2){tran_vals <- tran_vals_re_01}
-      if (init_state == 2 & new_state == 1){tran_vals <- tran_vals_re_10}
-      if (init_state == 2 & new_state == 2){tran_vals <- tran_vals_re_11}
+      tran_vals <- tran_vals_re_array[init_state,new_state,,,]
       
       for (ind in 1:length(alpha)){
         for(re_ind in 1:re_num){
@@ -491,7 +555,7 @@ CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_
           sin_part_vec[init_state,re_ind] <- sin_part_vec[init_state,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec)
           
           cos_sin_part[init_state,re_ind] <- cos_sin_part[init_state,re_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec)
-
+          
         }
       }
     }
@@ -499,7 +563,7 @@ CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_
   
   
   for(re_ind in 1:re_num){
-  
+    
     gradient_re <- as.vector(t(gradient[,,re_ind]))
     hessian_vec_re <- hessian_vec[,,re_ind]
     hessian_re <- matrix(0,6,6)
@@ -532,14 +596,15 @@ CalcTranC <- function(alpha,beta,act,light,params_tran,emit_act,emit_light,corr_
     hessian_re[1:3,1:3] <- hessian_re1
     hessian_re[4:6,4:6] <- hessian_re2
     
-  
+    
     params_tran_working[re_ind,] <- params_tran_working[re_ind,] - solve(-hessian_re,-gradient_re)
     
   }
-
+  
   
   return(params_tran_working)
 }
+
 
 EmitLogLike <- function(act,light,mu_act,sig_act,mu_light,sig_light,bivar_corr,lod_act,lod_light,weights_vec){
   
@@ -824,7 +889,7 @@ emit_light_true[2,2,] <- seq(1,2,length.out = RE_num)
 corr_mat_true <- matrix(0,ncol = 2,nrow = RE_num)
 
 beta_vec_true <- c(0,seq(-.75,1,length.out = RE_num-1))
-beta_vec_true <- rep(0,RE_num)
+# beta_vec_true <- rep(0,RE_num)
 
 lod_act_true <- 0
 lod_light_true <- 0
@@ -1129,7 +1194,7 @@ while(abs(like_diff) > 1e-4){
   end_time <- Sys.time()
   time_vec <- c(time_vec,as.numeric(difftime(end_time, start_time, units = "secs")))
   beta_counter <- beta_counter + 1
-  if(beta_counter > 5 & min(surv_event %*% re_prob) > 1e-10){beta_bool <- T}
+  if(beta_counter > 3 & min(surv_event %*% re_prob) > 1e-10){beta_bool <- T}
   
 }
 true_params <- list(init_true,params_tran_true,emit_act_true,
@@ -1153,6 +1218,3 @@ if(!real_data){to_save <- list(true_params,emp_params,est_params,bic)
 
 
 if (like_diff > -1){save(to_save,file = paste0("JMHMM",RE_num,"Seed",sim_num,".rda"))}
-
-
-
