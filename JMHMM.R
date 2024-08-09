@@ -9,7 +9,7 @@ library(dplyr)
 
 RE_type <- "norm"
 
-real_data <- F
+real_data <- T
 set_seed <- T
 
 epsilon <- 1e-5
@@ -555,7 +555,7 @@ CalcTranHelper <- function(act, light, tran_list_mat, emit_act,
 }
 
   
-CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat, fcovar_vec, fcovar_mat){
+CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat, fcovar_vec, vcovar_mat){
   
   len <- dim(act)[1]
   mix_num <- dim(emit_act)[3]
@@ -950,6 +950,31 @@ CalcBeta <- function(beta_vec,re_prob,surv_event,surv_time){
   return(beta_vec)
 }
 
+FirstDay2WeekInd <- function(first_day){
+  weekday <- numeric(96)
+  friday <- c(rep(0,68),rep(1,28))
+  saturday <- numeric(96)+1
+  sunday <- c(rep(1,68),rep(0,28))
+  
+  if (first_day == 1){
+    covar_vec <- c(sunday,rep(weekday,4),friday,saturday,sunday,weekday)
+  } else if (first_day == 2) {
+    covar_vec <- c(rep(weekday,4),friday,saturday,sunday,rep(weekday,2))
+  } else if (first_day == 3) {
+    covar_vec <- c(rep(weekday,3),friday,saturday,sunday,rep(weekday,3))
+  } else if (first_day == 4) {
+    covar_vec <- c(rep(weekday,2),friday,saturday,sunday,rep(weekday,4))
+  } else if (first_day == 5) {
+    covar_vec <- c(weekday,friday,saturday,sunday,rep(weekday,4),friday)
+  } else if (first_day == 6) {
+    covar_vec <- c(friday,saturday,sunday,rep(weekday,4),friday,saturday)
+  } else if (first_day == 7) {
+    covar_vec <- c(saturday,sunday,rep(weekday,4),friday,saturday,sunday)
+  }
+  
+  return(covar_vec)
+}
+
 readCpp( "cFunctions.cpp" )
 readCpp( "../Rcode/cFunctions.cpp" )
 ################## EM Setup ################## 
@@ -1054,8 +1079,8 @@ if (real_data) {
   light <- t(light[,-1])
   light <- log(light + epsilon)
   
-  id_G <- wave_data_G[[4]]
-  id_H <- wave_data_H[[4]]
+  id_G <- wave_data_G[[3]]
+  id_H <- wave_data_H[[3]]
   id <- rbind(id_G,id_H)
   
   seqn_com_id <- id$SEQN %in% lmf_data$seqn
@@ -1071,12 +1096,17 @@ if (real_data) {
   
   log_sweights_vec <- log(id$sweights/2)
   
-  id <- id %>% mutate(age_disc = case_when(age <= 10 ~ 1,
-                                           age <=20 & age > 10 ~ 2,
-                                           age <=35 & age > 20 ~ 3,
-                                           age <=50 & age > 35 ~ 4,
-                                           age <=65 & age > 50 ~ 5,
-                                           age > 65 ~ 6))
+  id <- id %>% mutate(age_disc = case_when(age <=30 ~ 1,
+                                           age <=50 & age > 35 ~ 2,
+                                           age <=65 & age > 50 ~ 3,
+                                           age > 65 ~ 4))
+  
+  # id <- id %>% mutate(age_disc = case_when(age <=30 ~ 1,
+  #                                          age <=40 & age > 30 ~ 2,
+  #                                          age <=50 & age > 40 ~ 3,
+  #                                          age <=60 & age > 50 ~ 4,
+  #                                          age <=70 & age > 60 ~ 5,
+  #                                          age > 70 ~ 6))
   
   id <- id %>% mutate(pov_disc = floor(poverty)+1)
   
@@ -1090,8 +1120,6 @@ if (real_data) {
   surv_event <- lmf_data$mortstat
   surv_time <- lmf_data$permth_exm
   
-  day_length <- dim(act)[1]
-  num_of_people <- dim(act)[2]
   
 
   #need to initialize starting values
@@ -1102,7 +1130,23 @@ if (real_data) {
   # surv_event <- surv_event[1:num_of_people]
   # surv_time <- surv_time[1:num_of_people]
   
+  first_day_vec <- as.numeric(id$PAXDAYWM)
   
+  vcovar_mat <- sapply(first_day_vec,FirstDay2WeekInd)
+  fcovar_vec <- id$age_disc
+  
+  to_keep_inds <- !is.na(fcovar_vec)
+  
+  act <- act[,to_keep_inds]
+  light <- light[,to_keep_inds]
+  vcovar_mat <- vcovar_mat[,to_keep_inds]
+  fcovar_vec <- fcovar_vec[to_keep_inds]
+  surv_event <- surv_event[to_keep_inds]
+  surv_time <- surv_time[to_keep_inds]
+  
+  
+  day_length <- dim(act)[1]
+  num_of_people <- dim(act)[2]
 }
 
 ###### Initial Settings ###### 
