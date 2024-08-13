@@ -222,7 +222,7 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
 }
 
 // [[Rcpp::export]]
-List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light,double lod_act, double lod_light, NumericMatrix corr_mat, vec beta_vec, vec event_vec, vec bline_vec, vec cbline_vec, mat lintegral_mat, NumericVector log_sweights_vec, vec fcovar_vec, mat vcovar_mat){
+List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light,double lod_act, double lod_light, NumericMatrix corr_mat, mat beta_mat, vec event_vec, vec bline_vec, vec cbline_vec, mat lintegral_mat, NumericVector log_sweights_vec, vec fcovar_vec, mat vcovar_mat){
 	int num_people = act.ncol();
 	int len = act.nrow();
 	int num_re = emit_act.n_slices;
@@ -236,6 +236,7 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 		
 		List tran_list_fcovar = tran_list[fcovar_vec(ind)-1];
 		vec vcovar_vec = vcovar_mat.col(ind);
+		vec beta_vec = beta_mat.col(fcovar_vec(ind)-1);
 		
 		for (int clust_i = 0; clust_i < num_re; clust_i++){
 			NumericVector corr_vec = corr_mat.row(clust_i);
