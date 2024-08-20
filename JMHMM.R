@@ -605,6 +605,7 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
       for (ind in 1:length(alpha)){
         
         fcovar_ind <- fcovar_vec[ind]
+        fovar_vec_ind <- fcovar_vec == fcovar_ind
         vcovar_vec <- vcovar_mat[-1,ind]
         vcovar_vecR <- vcovar_vec + 1
         
@@ -1056,16 +1057,23 @@ init_true[,1] <- seq(.1,.9,length.out = mix_num)
 init_true[,2] <- 1 - init_true[,1]
 
 params_tran_true <- matrix(rep(c(-3,-1.5,-.6,-1.9,.6,.5),mix_num),ncol = 6,byrow = T) 
-params_tran_array_dim <- c(mix_num,6,fcovar_num,vcovar_num)
+params_tran_array_dim <- c(mix_num,6,vcovar_num)
 params_tran_array_true <- array(NA,dim = params_tran_array_dim)
-for (fcovar_num_ind in 1:fcovar_num){
-  for (vcovar_num_ind in 1:vcovar_num){
-    params_tran_array_true[,,fcovar_num_ind,vcovar_num_ind] <- params_tran_true - fcovar_num_ind*.2
-  }
+for (vcovar_num_ind in 1:vcovar_num){
+  params_tran_array_true[,,vcovar_num_ind] <- params_tran_true 
+}
+
+
+params_tran_fcovar_true <- matrix(rep(c(-1,-.2,-.1,-.7,.2,.1),fcovar_num),ncol = 6,byrow = T) 
+params_tran_array_fcovar_dim <- c(fcovar_num,6,vcovar_num)
+params_tran_array_fcovar_true <- array(NA,dim = params_tran_array_fcovar_dim)
+for (vcovar_num_ind in 1:vcovar_num){
+  params_tran_array_fcovar_true[,,vcovar_num_ind] <- params_tran_fcovar_true 
 }
 
 
 params_tran_array_true <- params_tran_array_true + runif(unlist(length(params_tran_array_true)),-.3,.3)
+params_tran_array_fcovar_true <- params_tran_array_fcovar_true + runif(unlist(length(params_tran_array_fcovar_true)),-.3,.3)
 
 emit_act_true <- array(NA, c(2,2,mix_num))
 emit_act_true[1,1,] <- seq(6,7,length.out = mix_num)
@@ -1100,7 +1108,7 @@ pi_l_true <- rep(1/mix_num,mix_num)
 ###### Simulate Data ###### 
 if (!real_data){
   simulated_hmm <- SimulateHMM(day_length,num_of_people,
-                                init=init_true,params_tran_array = params_tran_array_true,
+                                init=init_true,params_tran_array = params_tran_array_true, params_tran_fcovar_array = params_tran_array_fcovar_true,
                                 emit_act = emit_act_true,emit_light = emit_light_true,corr_mat = corr_mat_true,
                                 lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true,
                                 missing_perc = missing_perc, beta_mat_true = beta_mat_true)
@@ -1120,6 +1128,7 @@ if (!real_data){
   
   init_emp <- emp_params[[1]]
   params_tran_array_emp <- emp_params[[2]]
+  params_tran_array_fcovar_emp <- params_tran_array_fcovar_true
   emit_act_emp <- emp_params[[3]]
   emit_light_emp <- emp_params[[4]]
   corr_mat_emp <- emp_params[[5]]
