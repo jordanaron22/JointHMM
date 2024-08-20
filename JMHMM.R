@@ -7,6 +7,7 @@ library(MASS)
 library(survival)
 library(dplyr)
 library(numDeriv)
+library(Matrix)
 
 RE_type <- "norm"
 
@@ -16,7 +17,7 @@ set_seed <- T
 epsilon <- 1e-5
 lepsilon <- log(epsilon)
 
-fcovar_num <- 4
+fcovar_num <- 5
 vcovar_num <- 2
 
 sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
@@ -29,7 +30,7 @@ mix_num <- as.numeric(commandArgs(TRUE)[1])
 # print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",mix_num))
 print(paste("Sim Seed:",sim_num,"HMM Num:",mix_num))
 
-if(is.na(mix_num)){mix_num <- 3}
+if(is.na(mix_num)){mix_num <- 4}
 # if(is.na(sim_size)){sim_size <- 0}
 # if(is.na(RE_type)){RE_type <- "norm"}
 
@@ -68,12 +69,12 @@ logit <- function(x){
   return(log(x/(1-x)))
 }
 
-Params2TranVectorT <- function(re_ind,len,params_tran){
-  return(t(sapply(c(2:(len)),FUN = Params2Tran,params_tran = params_tran,re_ind=re_ind)))
+Params2TranVectorT <- function(re_ind,fcovar_ind,len,params_tran,params_tran_fcovar){
+  return(t(sapply(c(2:(len)),FUN = Params2Tran,params_tran = params_tran,re_ind=re_ind,params_tran_fcovar=params_tran_fcovar,fcovar_ind=fcovar_ind)))
 }
 
-TranByTimeVec <- function(re_ind, params_tran, time_vec){
-  return(lapply(time_vec, Params2Tran, params_tran = params_tran,re_ind=re_ind))
+TranByTimeVec <- function(re_ind, fcovar_ind, params_tran, params_tran_fcovar,time_vec){
+  return(lapply(time_vec, Params2Tran, params_tran = params_tran,re_ind=re_ind,params_tran_fcovar=params_tran_fcovar,fcovar_ind=fcovar_ind))
 }
 
 Param2TranHelper <- function(p12,p21){
@@ -85,12 +86,15 @@ Param2TranHelper <- function(p12,p21){
   return(tran)
 }
 
-Params2Tran <- function(params_tran,time,re_ind){
+Params2Tran <- function(params_tran,time,re_ind,params_tran_fcovar,fcovar_ind){
   
   param_matrix <- matrix(params_tran[re_ind,],ncol=3,nrow=2, byrow = T)
+  param_fcovar_matrix <- matrix(params_tran_fcovar[fcovar_ind,],ncol=3,nrow=2, byrow = T)
+  
+  param_matrix_comb <- param_matrix + param_fcovar_matrix
 
-  tran <- Param2TranHelper(param_matrix[1,1]+param_matrix[1,2]*cos(2*pi*time/96)+param_matrix[1,3]*sin(2*pi*time/96),
-                           param_matrix[2,1]+param_matrix[2,2]*cos(2*pi*time/96)+param_matrix[2,3]*sin(2*pi*time/96))
+  tran <- Param2TranHelper(param_matrix_comb[1,1]+param_matrix_comb[1,2]*cos(2*pi*time/96)+param_matrix_comb[1,3]*sin(2*pi*time/96),
+                           param_matrix_comb[2,1]+param_matrix_comb[2,2]*cos(2*pi*time/96)+param_matrix_comb[2,3]*sin(2*pi*time/96))
 
 
   return(tran)
@@ -231,7 +235,7 @@ SimSurvival <- function(mixture_mat,beta_mat,fcovar_vec,lam = 1/20){
 # }
 
 
-GenTranColVecList <- function(params_tran_array_array,mix_num,fcovar_num,vcovar_num){
+GenTranColVecList <- function(params_tran_array,params_tran_array_fcovar,mix_num,fcovar_num,vcovar_num){
   
   len <- dim(act)[1]
   mix_num <- dim(emit_act)[3]
@@ -243,7 +247,7 @@ GenTranColVecList <- function(params_tran_array_array,mix_num,fcovar_num,vcovar_
   for (fcovar_ind in 1:fcovar_num){
     for (mixture_ind in 1:mix_num){
       for (vcovar_ind in 1:vcovar_num){
-        vcovar_tran_list[[vcovar_ind]] <- Params2TranVectorT(mixture_ind,len,params_tran_array[,,fcovar_ind,vcovar_ind])
+        vcovar_tran_list[[vcovar_ind]] <- Params2TranVectorT(mixture_ind,fcovar_ind,len,params_tran_array[,,vcovar_ind],params_tran_array_fcovar[,,vcovar_ind])
         
       }
       mixture_vcovar_tran_list[[mixture_ind]] <- vcovar_tran_list
@@ -253,7 +257,7 @@ GenTranColVecList <- function(params_tran_array_array,mix_num,fcovar_num,vcovar_
   return(fcovar_mixture_vcovar_tran_list)
 }
 
-GenTranList <- function(params_tran_array,time_vec,mix_num,fcovar_num,vcovar_num){
+GenTranList <- function(params_tran_array,params_tran_array_fcovar,time_vec,mix_num,fcovar_num,vcovar_num){
   
   
   mixture_vcovar_tran_list <- list()
@@ -265,8 +269,10 @@ GenTranList <- function(params_tran_array,time_vec,mix_num,fcovar_num,vcovar_num
       for (vcovar_ind in 1:vcovar_num){
         
         vcovar_tran_list[[vcovar_ind]] <- TranByTimeVec(re_ind = mixture_ind,
-                                                          params_tran = params_tran_array[,,fcovar_ind,vcovar_ind],
-                                                          time_vec = time_vec)
+                                                        fcovar_ind = fcovar_ind,
+                                                        params_tran = params_tran_array[,,vcovar_ind],
+                                                        params_tran_fcovar = params_tran_array_fcovar[,,vcovar_ind],
+                                                        time_vec = time_vec)
         
       }
       mixture_vcovar_tran_list[[mixture_ind]] <- vcovar_tran_list
@@ -277,7 +283,7 @@ GenTranList <- function(params_tran_array,time_vec,mix_num,fcovar_num,vcovar_num
 }
 
 
-SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,emit_act,
+SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,params_tran_array_fcovar,emit_act,
                         emit_light,corr_mat,lod_act,lod_light, pi_l,beta_mat_true,missing_perc){
   mix_num <- dim(emit_act)[3]
   
@@ -292,7 +298,7 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,emit_act
   # tran_list <- lapply(c(1:mix_num),TranByTimeVec, params_tran = params_tran_array, time_vec = c(1:day_length))
   mixture_vec <- apply(mixture_mat,1,ChooseMixture)
 
-  tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,fcovar_num,vcovar_num)
+  tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
   
   
   for (ind in 1:num_of_people){
@@ -341,6 +347,7 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,emit_act
   
   init_emp <- init
   params_tran_array_emp <- params_tran_array
+  params_tran_array_fcovar_emp <- params_tran_array_fcovar
   emit_act_emp <- emit_act
   emit_light_emp <- emit_light
   corr_mat_emp <- corr_mat
@@ -392,7 +399,7 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,emit_act
   
   # beta_vec_emp <- c(0,summary(cph_fit)$coefficients[,1])
   
-  emp_params <- list(init_emp,params_tran_array_emp,emit_act_emp,
+  emp_params <- list(init_emp,params_tran_array_emp,params_tran_array_fcovar_emp,emit_act_emp,
                      emit_light_emp,corr_mat_emp,pi_l_emp,beta_mat_emp)
   
 
@@ -569,6 +576,12 @@ CalcTranHelper <- function(act, light, tran_list_mat, emit_act,
   return(tran_vals_re_array)
 }
 
+Symmetricize <- function(mat){
+  mat <- mat + t(mat)
+  diag(mat) <- diag(mat)/2
+  return(mat)
+}
+
   
 CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat, fcovar_vec, vcovar_mat){
   
@@ -576,14 +589,25 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
   mix_num <- dim(emit_act)[3]
   params_tran_array_working <- params_tran_array
   
-  gradient <- array(0,c(2,3,mix_num,fcovar_num,vcovar_num))
-  hessian_vec <- array(0,c(2,3,mix_num,fcovar_num,vcovar_num))
-  cos_part_vec <- array(0,c(2,mix_num,fcovar_num,vcovar_num))
-  sin_part_vec <- array(0,c(2,mix_num,fcovar_num,vcovar_num))
-  cos_sin_part <- array(0,c(2,mix_num,fcovar_num,vcovar_num))
+  gradient <- array(0,c(2,3,mix_num,vcovar_num))
+  hessian_vec <- array(0,c(2,3,mix_num,vcovar_num))
+  cos_part_vec <- array(0,c(2,mix_num,vcovar_num))
+  sin_part_vec <- array(0,c(2,mix_num,vcovar_num))
+  cos_sin_part <- array(0,c(2,mix_num,vcovar_num))
+  
+  gradient_fcovar <- array(0,c(2,3,fcovar_num,vcovar_num))
+  hessian_vec_fcovar <- array(0,c(2,3,fcovar_num,vcovar_num))
+  cos_part_vec_fcovar <- array(0,c(2,fcovar_num,vcovar_num))
+  sin_part_vec_fcovar <- array(0,c(2,fcovar_num,vcovar_num))
+  cos_sin_part_fcovar <- array(0,c(2,fcovar_num,vcovar_num))
+  
+  hessian_vec_both <- array(0,c(2,3,mix_num,fcovar_num,vcovar_num))
+  cos_part_vec_both <- array(0,c(2,mix_num,fcovar_num,vcovar_num))
+  sin_part_vec_both <- array(0,c(2,mix_num,fcovar_num,vcovar_num))
+  cos_sin_part_both <- array(0,c(2,mix_num,fcovar_num,vcovar_num))
   
   # tran_list_mat <- lapply(c(1:mix_num),Params2TranVectorT, len = len, params_tran = params_tran)
-  tran_list_mat <- GenTranColVecList(params_tran_array,mix_num,fcovar_num,vcovar_num)
+  tran_list_mat <- GenTranColVecList(params_tran_array,params_tran_array_fcovar,mix_num,fcovar_num,vcovar_num)
   ind_like_vec <- unlist(lapply(c(1:length(alpha)),IndLike,alpha = alpha, pi_l = pi_l, len = len))
   
   tran_vals_re_array <- CalcTranHelper(act = act,
@@ -605,7 +629,7 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
       for (ind in 1:length(alpha)){
         
         fcovar_ind <- fcovar_vec[ind]
-        fovar_vec_ind <- fcovar_vec == fcovar_ind
+        # fovar_vec_ind <- fcovar_vec == fcovar_ind
         vcovar_vec <- vcovar_mat[-1,ind]
         vcovar_vecR <- vcovar_vec + 1
         
@@ -648,71 +672,123 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
           
           for (vcovar_ind in 1:vcovar_num){
           
-            gradient[init_state,1,re_ind,fcovar_ind,vcovar_ind] <- gradient[init_state,1,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*(vcovar_vecR==vcovar_ind))
-            gradient[init_state,2,re_ind,fcovar_ind,vcovar_ind] <- gradient[init_state,2,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*cos_vec*(vcovar_vecR==vcovar_ind))
-            gradient[init_state,3,re_ind,fcovar_ind,vcovar_ind] <- gradient[init_state,3,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*sin_vec*(vcovar_vecR==vcovar_ind))
+            # Derivate of b's
+            gradient[init_state,1,re_ind,vcovar_ind] <- gradient[init_state,1,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*(vcovar_vecR==vcovar_ind))
+            gradient[init_state,2,re_ind,vcovar_ind] <- gradient[init_state,2,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*cos_vec*(vcovar_vecR==vcovar_ind))
+            gradient[init_state,3,re_ind,vcovar_ind] <- gradient[init_state,3,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*sin_vec*(vcovar_vecR==vcovar_ind))
             
-            hessian_vec[init_state,1,re_ind,fcovar_ind,vcovar_ind] <- hessian_vec[init_state,1,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*(vcovar_vecR==vcovar_ind))
-            hessian_vec[init_state,2,re_ind,fcovar_ind,vcovar_ind] <- hessian_vec[init_state,2,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec^2*(vcovar_vecR==vcovar_ind))
-            hessian_vec[init_state,3,re_ind,fcovar_ind,vcovar_ind] <- hessian_vec[init_state,3,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec^2*(vcovar_vecR==vcovar_ind))
+            hessian_vec[init_state,1,re_ind,vcovar_ind] <- hessian_vec[init_state,1,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*(vcovar_vecR==vcovar_ind))
+            hessian_vec[init_state,2,re_ind,vcovar_ind] <- hessian_vec[init_state,2,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec^2*(vcovar_vecR==vcovar_ind))
+            hessian_vec[init_state,3,re_ind,vcovar_ind] <- hessian_vec[init_state,3,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec^2*(vcovar_vecR==vcovar_ind))
             
-            cos_part_vec[init_state,re_ind,fcovar_ind,vcovar_ind] <- cos_part_vec[init_state,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*(vcovar_vecR==vcovar_ind))
-            sin_part_vec[init_state,re_ind,fcovar_ind,vcovar_ind] <- sin_part_vec[init_state,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec*(vcovar_vecR==vcovar_ind))
+            cos_part_vec[init_state,re_ind,vcovar_ind] <- cos_part_vec[init_state,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*(vcovar_vecR==vcovar_ind))
+            sin_part_vec[init_state,re_ind,vcovar_ind] <- sin_part_vec[init_state,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec*(vcovar_vecR==vcovar_ind))
             
-            cos_sin_part[init_state,re_ind,fcovar_ind,vcovar_ind] <- cos_sin_part[init_state,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec*(vcovar_vecR==vcovar_ind))
+            cos_sin_part[init_state,re_ind,vcovar_ind] <- cos_sin_part[init_state,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec*(vcovar_vecR==vcovar_ind))
+            
+            
+            # Derivatives of a's
+            gradient_fcovar[init_state,1,fcovar_ind,vcovar_ind] <- gradient_fcovar[init_state,1,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*(vcovar_vecR==vcovar_ind))
+            gradient_fcovar[init_state,2,fcovar_ind,vcovar_ind] <- gradient_fcovar[init_state,2,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*cos_vec*(vcovar_vecR==vcovar_ind))
+            gradient_fcovar[init_state,3,fcovar_ind,vcovar_ind] <- gradient_fcovar[init_state,3,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*sin_vec*(vcovar_vecR==vcovar_ind))
+            
+            hessian_vec_fcovar[init_state,1,fcovar_ind,vcovar_ind] <- hessian_vec_fcovar[init_state,1,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*(vcovar_vecR==vcovar_ind))
+            hessian_vec_fcovar[init_state,2,fcovar_ind,vcovar_ind] <- hessian_vec_fcovar[init_state,2,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec^2*(vcovar_vecR==vcovar_ind))
+            hessian_vec_fcovar[init_state,3,fcovar_ind,vcovar_ind] <- hessian_vec_fcovar[init_state,3,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec^2*(vcovar_vecR==vcovar_ind))
+            
+            cos_part_vec_fcovar[init_state,fcovar_ind,vcovar_ind] <- cos_part_vec_fcovar[init_state,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*(vcovar_vecR==vcovar_ind))
+            sin_part_vec_fcovar[init_state,fcovar_ind,vcovar_ind] <- sin_part_vec_fcovar[init_state,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec*(vcovar_vecR==vcovar_ind))
+            
+            cos_sin_part_fcovar[init_state,fcovar_ind,vcovar_ind] <- cos_sin_part_fcovar[init_state,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec*(vcovar_vecR==vcovar_ind))
+            
+            # Partial derivatives of both b's and a's
+            hessian_vec_both[init_state,1,re_ind,fcovar_ind,vcovar_ind] <- hessian_vec_both[init_state,1,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*(vcovar_vecR==vcovar_ind))
+            hessian_vec_both[init_state,2,re_ind,fcovar_ind,vcovar_ind] <- hessian_vec_both[init_state,2,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec^2*(vcovar_vecR==vcovar_ind))
+            hessian_vec_both[init_state,3,re_ind,fcovar_ind,vcovar_ind] <- hessian_vec_both[init_state,3,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec^2*(vcovar_vecR==vcovar_ind))
+            
+            cos_part_vec_both[init_state,re_ind,fcovar_ind,vcovar_ind] <- cos_part_vec_both[init_state,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*(vcovar_vecR==vcovar_ind))
+            sin_part_vec_both[init_state,re_ind,fcovar_ind,vcovar_ind] <- sin_part_vec_both[init_state,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*sin_vec*(vcovar_vecR==vcovar_ind))
+            
+            cos_sin_part_both[init_state,re_ind,fcovar_ind,vcovar_ind] <- cos_sin_part_both[init_state,re_ind,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec*(vcovar_vecR==vcovar_ind))
+            
           }
-          
+    
         }
       }
     }
   }
   
+  params_tran_array_new <- params_tran_array
+  params_tran_array_fcovar_new <- params_tran_array_fcovar
   
-  for(re_ind in 1:mix_num){
-    for(fcovar_ind in 1:fcovar_num){
-      for(vcovar_ind in 1:vcovar_num){
-    
-        gradient_re <- as.vector(t(gradient[,,re_ind,fcovar_ind,vcovar_ind]))
-        hessian_vec_re <- hessian_vec[,,re_ind,fcovar_ind,vcovar_ind]
-        hessian_re <- matrix(0,6,6)
-        hessian_re1 <- matrix(0,3,3)
-        hessian_re2 <- matrix(0,3,3)
+  for (init_state in 1:2){
+    for(vcovar_ind in 1:vcovar_num){
+      
+      bdiag_mat_list <- list()
+      bdiag_mat_fcovar_list <- list()
+      
+      for (re_ind in 1:mix_num){
+        bdiag_mat <- matrix(0,3,3)
+        diag(bdiag_mat) <- hessian_vec[init_state,,re_ind,vcovar_ind]
+        bdiag_mat[1,2] <- cos_part_vec[init_state,re_ind,vcovar_ind]
+        bdiag_mat[1,3] <- sin_part_vec[init_state,re_ind,vcovar_ind]
+        bdiag_mat[2,3] <- cos_sin_part[init_state,re_ind,vcovar_ind]
         
-        #### HESS 1
-        
-        diag(hessian_re1) <- c(hessian_vec_re[1,])
-        hessian_re1[1,2] <- cos_part_vec[1,re_ind,fcovar_ind,vcovar_ind]
-        hessian_re1[1,3] <- sin_part_vec[1,re_ind,fcovar_ind,vcovar_ind]
-        hessian_re1[2,3] <- cos_sin_part[1,re_ind,fcovar_ind,vcovar_ind]
-        
-        hessian_re1 <- hessian_re1+t(hessian_re1)
-        diag(hessian_re1) <- diag(hessian_re1)/2
-        
-        #### HESS 2
-        
-        diag(hessian_re2) <- c(hessian_vec_re[2,])
-        hessian_re2[1,2] <- cos_part_vec[2,re_ind,fcovar_ind,vcovar_ind]
-        hessian_re2[1,3] <- sin_part_vec[2,re_ind,fcovar_ind,vcovar_ind]
-        hessian_re2[2,3] <- cos_sin_part[2,re_ind,fcovar_ind,vcovar_ind]
-        
-        hessian_re2 <- hessian_re2+t(hessian_re2)
-        diag(hessian_re2) <- diag(hessian_re2)/2
-        
-        #######
-        
-        
-        hessian_re[1:3,1:3] <- hessian_re1
-        hessian_re[4:6,4:6] <- hessian_re2
-        
-        
-        params_tran_array_working[re_ind,,fcovar_ind,vcovar_ind] <- params_tran_array_working[re_ind,,fcovar_ind,vcovar_ind] - solve(-hessian_re,-gradient_re)
+        bdiag_mat_list <- append(bdiag_mat_list, list(bdiag_mat))
       }
+      
+      for (fcovar_ind in 1:fcovar_num){
+        bdiag_mat_fcovar <- matrix(0,3,3)
+        diag(bdiag_mat_fcovar) <- hessian_vec_fcovar[init_state,,fcovar_ind,vcovar_ind]
+        bdiag_mat_fcovar[1,2] <- cos_part_vec_fcovar[init_state,fcovar_ind,vcovar_ind]
+        bdiag_mat_fcovar[1,3] <- sin_part_vec_fcovar[init_state,fcovar_ind,vcovar_ind]
+        bdiag_mat_fcovar[2,3] <- cos_sin_part_fcovar[init_state,fcovar_ind,vcovar_ind]
+        
+        bdiag_mat_fcovar_list <- append(bdiag_mat_fcovar_list, list(bdiag_mat_fcovar))
+      }
+      
+      hessian <- as.matrix(bdiag(list(bdiag(bdiag_mat_list),bdiag(bdiag_mat_fcovar_list))))
+      
+      for (re_ind in 1:mix_num){
+        bdiag_mat_both <- matrix(0,3,0)
+        for (fcovar_ind in 1:fcovar_num){
+          bdiag_mat_both_working <- matrix(0,3,3)
+          diag(bdiag_mat_both_working) <- hessian_vec_both[init_state,,re_ind,fcovar_ind,vcovar_num]
+          bdiag_mat_both_working[1,2] <- cos_part_vec_both[init_state,re_ind,fcovar_ind,vcovar_ind]
+          bdiag_mat_both_working[1,3] <- sin_part_vec_both[init_state,re_ind,fcovar_ind,vcovar_ind]
+          bdiag_mat_both_working[2,3] <- cos_sin_part_both[init_state,re_ind,fcovar_ind,vcovar_ind]
+          bdiag_mat_both_working <- Symmetricize(bdiag_mat_both_working)
+          bdiag_mat_both <- cbind(bdiag_mat_both,bdiag_mat_both_working)
+        }
+        start_ind_r <- (re_ind*3)-2
+        stop_ind_r <- re_ind*3
+        
+        start_ind_c <- (mix_num*3)+1
+        stop_ind_c <- dim(hessian)[2]
+        
+        hessian[c(start_ind_r:stop_ind_r),c(start_ind_c:stop_ind_c)] <- bdiag_mat_both
+      }
+      
+      hess <- Symmetricize(hessian)
+      grad <- c(as.vector(gradient[init_state,,,vcovar_ind]),as.vector(gradient_fcovar[init_state,,,vcovar_ind]))
+      
+      
+      if (init_state == 1){
+        array_inds <- c(1:3)
+      } else {array_inds <- c(4:6)}
+      
+      params_tran_vec <- c(as.vector(t(params_tran_array[,array_inds,vcovar_ind])),
+                           as.vector(t(params_tran_array_fcovar[,array_inds,vcovar_ind])))
+      
+      params_tran_vec_new <- params_tran_vec - solve(-hess,-grad,tol = 1e-50)
+      
+      
+      params_tran_array_new[,array_inds,vcovar_ind] <- matrix(params_tran_vec_new[1:(3*mix_num)],ncol = 3,byrow = T)
+      params_tran_array_fcovar_new[,array_inds,vcovar_ind] <- matrix(params_tran_vec_new[((3*mix_num)+1):length(params_tran_vec_new)],ncol = 3,byrow = T)
     }
-    
   }
   
-  
-  return(params_tran_array_working)
+  return(list(params_tran_array_new,params_tran_array_fcovar_new))
 }
 
 
@@ -1071,10 +1147,6 @@ for (vcovar_num_ind in 1:vcovar_num){
   params_tran_array_fcovar_true[,,vcovar_num_ind] <- params_tran_fcovar_true 
 }
 
-
-params_tran_array_true <- params_tran_array_true + runif(unlist(length(params_tran_array_true)),-.3,.3)
-params_tran_array_fcovar_true <- params_tran_array_fcovar_true + runif(unlist(length(params_tran_array_fcovar_true)),-.3,.3)
-
 emit_act_true <- array(NA, c(2,2,mix_num))
 emit_act_true[1,1,] <- seq(6,7,length.out = mix_num)
 emit_act_true[1,2,] <- seq(1,2,length.out = mix_num)
@@ -1108,7 +1180,7 @@ pi_l_true <- rep(1/mix_num,mix_num)
 ###### Simulate Data ###### 
 if (!real_data){
   simulated_hmm <- SimulateHMM(day_length,num_of_people,
-                                init=init_true,params_tran_array = params_tran_array_true, params_tran_fcovar_array = params_tran_array_fcovar_true,
+                                init=init_true,params_tran_array = params_tran_array_true, params_tran_array_fcovar = params_tran_array_fcovar_true,
                                 emit_act = emit_act_true,emit_light = emit_light_true,corr_mat = corr_mat_true,
                                 lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true,
                                 missing_perc = missing_perc, beta_mat_true = beta_mat_true)
@@ -1128,12 +1200,12 @@ if (!real_data){
   
   init_emp <- emp_params[[1]]
   params_tran_array_emp <- emp_params[[2]]
-  params_tran_array_fcovar_emp <- params_tran_array_fcovar_true
-  emit_act_emp <- emp_params[[3]]
-  emit_light_emp <- emp_params[[4]]
-  corr_mat_emp <- emp_params[[5]]
-  pi_l_emp <- emp_params[[6]]
-  beta_mat_emp <- emp_params[[7]]
+  params_tran_array_fcovar_emp <- emp_params[[3]]
+  emit_act_emp <- emp_params[[4]]
+  emit_light_emp <- emp_params[[5]]
+  corr_mat_emp <- emp_params[[6]]
+  pi_l_emp <- emp_params[[7]]
+  beta_mat_emp <- emp_params[[8]]
   
 } 
 
@@ -1237,8 +1309,8 @@ if (real_data) {
 ###### Initial Settings ###### 
 
 init <- matrix(rep(.5,mix_num*2),ncol = 2)
-params_tran <- matrix(rep(c(-3,-1.5,-.6,-1.9,.6,.5),mix_num),ncol = 6,byrow = T)
-params_tran_array <- params_tran_array_true
+params_tran_array <- params_tran_array_true + runif(unlist(length(params_tran_array_true)),-.3,.3)
+params_tran_array_fcovar <- params_tran_array_fcovar_true + runif(unlist(length(params_tran_array_fcovar_true)),-.3,.3)
 # params_tran[,2:6] <- 0
 
 runif_tol <- .2
@@ -1280,7 +1352,7 @@ cbline_vec <- bhaz_vec[[2]]
 lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
 
 # tran_list <- lapply(c(1:mix_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:96))
-tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,fcovar_num,vcovar_num)
+tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
 
 
 
@@ -1309,7 +1381,6 @@ like_diff <- new_likelihood - likelihood
 # break
 beta_counter <- 0
 beta_bool <- F
-
 while(abs(like_diff) > 1e-4 * 1e-10){
 # for (i in 1:15){
   
@@ -1319,7 +1390,9 @@ while(abs(like_diff) > 1e-4 * 1e-10){
   ##### MC Param  #####
 
   # init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
-  # params_tran_array <- CalcTranC(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat,fcovar_vec,vcovar_mat)
+  params_tran_array_list <- CalcTranC(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat,fcovar_vec,vcovar_mat)
+  params_tran_array <- params_tran_array_list[[1]]
+  params_tran_array_fcovar <- params_tran_array_list[[2]]
   
   ##### Weights  #####
   weights_array_list <- CondMarginalize(alpha,beta,pi_l)
@@ -1374,7 +1447,7 @@ while(abs(like_diff) > 1e-4 * 1e-10){
     emit_light <- emit_light[,,reord_inds]
     pi_l <- pi_l[reord_inds]
     re_prob <- re_prob[,reord_inds]
-    params_tran_array <- params_tran_array[reord_inds,,,]
+    params_tran_array <- params_tran_array[reord_inds,,]
     dim(params_tran_array) <- params_tran_array_dim
     corr_mat <- corr_mat[reord_inds,]
     init <- init[reord_inds,]
@@ -1411,7 +1484,7 @@ while(abs(like_diff) > 1e-4 * 1e-10){
   # Calculate tran_list after reordering 
   # tran_list <- lapply(c(1:mix_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
   # x <- lapply(c(1:mix_num),Params2TranVectorT, len = len, params_tran = params_tran)
-  tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,fcovar_num,vcovar_num)
+  tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
   lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
   
   alpha <- ForwardC(act = act,light = light,
@@ -1468,3 +1541,32 @@ readCpp( "cFunctions.cpp" )
 
 ##TODO 
 ##Extend emit_act,emit_light, and cor_mat to another dimension for fixed covar
+
+
+
+TranGrad <- function(params_tran_vec){
+  len <- prod(params_tran_array_dim)
+  params_tran_vec1 <- params_tran_vec[1:len]
+  params_tran_vec2 <- params_tran_vec[(len+1):length(params_tran_vec)]
+  
+  params_tran_array <- array(params_tran_vec1, dim = params_tran_array_dim)
+  params_tran_array_fcovar <- array(params_tran_vec2, dim = params_tran_array_fcovar_dim)
+  
+  tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
+  alpha <- ForwardC(act = act,light = light,
+                    init = init,tran_list = tran_list,
+                    emit_act = emit_act,emit_light = emit_light,
+                    lod_act = lod_act, lod_light =  lod_light, 
+                    corr_mat = corr_mat, beta_mat = beta_mat,
+                    event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
+                    lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
+                    fcovar_vec = fcovar_vec, vcovar_mat = vcovar_mat)
+  
+  return(CalcLikelihood(alpha,pi_l))
+}
+params_tran_vec <- c(as.vector(params_tran_array),as.vector(params_tran_array_fcovar))
+TranGrad(params_tran_vec)
+tgrad <- hessian(TranGrad, params_tran_vec)
+
+###THIS WORKS BC THIS GIVES SAME OUTPUT AS CALCTRANC
+# NExt step is to work out structure of hessian
