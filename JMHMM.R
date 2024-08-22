@@ -17,11 +17,11 @@ set_seed <- T
 epsilon <- 1e-5
 lepsilon <- log(epsilon)
 
-fcovar_num <- 5
+fcovar_num <- 4
 vcovar_num <- 2
 
 sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
-if (is.na(sim_num)){sim_num <- 99}
+if (is.na(sim_num)){sim_num <- 999}
 if (set_seed){set.seed(sim_num)}
 
 mix_num <- as.numeric(commandArgs(TRUE)[1])
@@ -30,7 +30,7 @@ mix_num <- as.numeric(commandArgs(TRUE)[1])
 # print(paste("Sim Seed:",sim_num,"Size",sim_size,"RE type",RE_type,"Clust Num:",mix_num))
 print(paste("Sim Seed:",sim_num,"HMM Num:",mix_num))
 
-if(is.na(mix_num)){mix_num <- 4}
+if(is.na(mix_num)){mix_num <- 3}
 # if(is.na(sim_size)){sim_size <- 0}
 # if(is.na(RE_type)){RE_type <- "norm"}
 
@@ -120,17 +120,23 @@ Case4 <- function(act_obs,mu_act,sig_act,mu_light,sig_light,bivar_corr,light_LOD
   return(lognorm_dens)
 }
 
-CalcLintegralMat <- function(emit_act,emit_light,corr_mat,lod_act,lod_light){
+CalcLintegralMat <- function(emit_act,emit_light,emit_act_fcovar,emit_light_fcovar,corr_mat,lod_act,lod_light){
   mix_num <- dim(emit_act)[3]
   if (is.na(mix_num)){mix_num <- 1}
   
-  lintegral_mat <- matrix(NA,nrow = mix_num, ncol = 2)
+  lintegral_mat <- array(NA,dim = c(mix_num,fcovar_num,2))
   for (i in 1:mix_num){
-    lintegral_mat[i,1] <- log(integrate(Case4,lower = -Inf,upper = lod_act,
-                                        emit_act[1,1,i],emit_act[1,2,i],emit_light[1,1,i],emit_light[1,2,i],corr_mat[i,1],lod_light)[[1]])
-    
-    lintegral_mat[i,2] <- log(integrate(Case4,lower = -Inf,upper = lod_act,
-                                        emit_act[2,1,i],emit_act[2,2,i],emit_light[2,1,i],emit_light[2,2,i],corr_mat[i,2],lod_light)[[1]])
+    for (j in 1:fcovar_num){
+      lintegral_mat[i,j,1] <- log(integrate(Case4,lower = -Inf,upper = lod_act,
+                                          emit_act[1,1,i]+emit_act_fcovar[1,1,j],sqrt(emit_act[1,2,i]^2+emit_act_fcovar[1,2,j]^2),
+                                          emit_light[1,1,i]+emit_light_fcovar[1,1,j],sqrt(emit_light[1,2,i]^2+emit_light_fcovar[1,2,j]),
+                                          corr_mat[i,1],lod_light)[[1]])
+      
+      lintegral_mat[i,j,2] <- log(integrate(Case4,lower = -Inf,upper = lod_act,
+                                          emit_act[2,1,i]+emit_act_fcovar[2,1,j],sqrt(emit_act[2,2,i]^2+emit_act_fcovar[2,2,j]^2),
+                                          emit_light[2,1,i]+emit_light_fcovar[2,1,j],sqrt(emit_light[2,2,i]^2+emit_light_fcovar[2,2,j]^2),
+                                          corr_mat[i,2],lod_light)[[1]])
+    }
   }
   
   return(lintegral_mat)
@@ -283,8 +289,9 @@ GenTranList <- function(params_tran_array,params_tran_array_fcovar,time_vec,mix_
 }
 
 
-SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,params_tran_array_fcovar,emit_act,
-                        emit_light,corr_mat,lod_act,lod_light, pi_l,beta_mat_true,missing_perc){
+SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,params_tran_array_fcovar,
+                        emit_act,emit_light,emit_act_fcovar,emit_light_fcovar,corr_mat,
+                        lod_act,lod_light, pi_l,beta_mat_true,missing_perc){
   mix_num <- dim(emit_act)[3]
   
   mixture_mat <- t(rmultinom(num_of_people,1,pi_l_true))
@@ -315,11 +322,15 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,params_t
     
     for (i in 1:day_length){
       
-      mu_act <- emit_act[hidden_states[i] + 1,1,mixture_ind] 
-      sig_act <- emit_act[hidden_states[i] + 1,2,mixture_ind]
+      mu_act <- emit_act[hidden_states[i] + 1,1,mixture_ind] + emit_act_fcovar[hidden_states[i] + 1,1,fcovar_ind]
       
-      mu_light <- emit_light[hidden_states[i] + 1,1,mixture_ind] 
-      sig_light <- emit_light[hidden_states[i] + 1,2,mixture_ind]
+      sig_act <- sqrt(emit_act[hidden_states[i] + 1,2,mixture_ind]^2 + 
+                        emit_act_fcovar[hidden_states[i] + 1,2,fcovar_ind]^2)
+      
+      mu_light <- emit_light[hidden_states[i] + 1,1,mixture_ind] + emit_light_fcovar[hidden_states[i] + 1,1,fcovar_ind]
+      
+      sig_light <- sqrt(emit_light[hidden_states[i] + 1,2,mixture_ind]^2 +
+                          emit_light_fcovar[hidden_states[i] + 1,2,fcovar_ind]^2)
       
       bivar_corr <- corr_mat[mixture_ind,hidden_states[i] + 1]
       
@@ -345,62 +356,64 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,params_t
     }
   }
   
-  init_emp <- init
-  params_tran_array_emp <- params_tran_array
-  params_tran_array_fcovar_emp <- params_tran_array_fcovar
-  emit_act_emp <- emit_act
-  emit_light_emp <- emit_light
-  corr_mat_emp <- corr_mat
-  pi_l_emp <- pi_l
-  
-  for (re_ind in 1:mix_num){
-    mixture_indicator <- (mixture_vec == re_ind)
-    act_mixture <- activity_matrix[,mixture_indicator]
-    light_mixture <- light_matrix[,mixture_indicator]
-    mc_wake_mixture <- hidden_states_matrix[,mixture_indicator]==0
-    mc_sleep_mixture <- hidden_states_matrix[,mixture_indicator]==1
-    
-    init_emp[re_ind,1] <- sum(mc_wake_mixture[1,])/length(mc_wake_mixture[1,])
-    init_emp[re_ind,2] <- 1 - init_emp[re_ind,1] 
-    
-    emit_act_emp[1,1,re_ind] <- mean(act_mixture[mc_wake_mixture])
-    emit_act_emp[1,2,re_ind]  <- sqrt(var(act_mixture[mc_wake_mixture]))
-    emit_act_emp[2,1,re_ind]  <- mean(act_mixture[mc_sleep_mixture])
-    emit_act_emp[2,2,re_ind]  <- sqrt(var(act_mixture[mc_sleep_mixture]))
-    
-    emit_light_emp[1,1,re_ind] <- mean(light_mixture[mc_wake_mixture])
-    emit_light_emp[1,2,re_ind] <- sqrt(var(light_mixture[mc_wake_mixture]))
-    emit_light_emp[2,1,re_ind] <- mean(light_mixture[mc_sleep_mixture])
-    emit_light_emp[2,2,re_ind] <- sqrt(var(light_mixture[mc_sleep_mixture]))
-    
-    corr_mat_emp[re_ind,1] <- cor(act_mixture[mc_wake_mixture],light_mixture[mc_wake_mixture])
-    corr_mat_emp[re_ind,2] <- cor(act_mixture[mc_sleep_mixture],light_mixture[mc_sleep_mixture])
-    
-    pi_l_emp[re_ind] <- sum(mixture_indicator)/num_of_people
-  }
+  # init_emp <- init
+  # params_tran_array_emp <- params_tran_array
+  # params_tran_array_fcovar_emp <- params_tran_array_fcovar
+  # emit_act_emp <- emit_act
+  # emit_light_emp <- emit_light
+  # emit_act_fcovar_emp <- emit_act_fcovar
+  # emit_light_fcovar_emp <- emit_light_fcovar
+  # corr_mat_emp <- corr_mat
+  # pi_l_emp <- pi_l
+  # 
+  # for (re_ind in 1:mix_num){
+  #   mixture_indicator <- (mixture_vec == re_ind)
+  #   act_mixture <- activity_matrix[,mixture_indicator]
+  #   light_mixture <- light_matrix[,mixture_indicator]
+  #   mc_wake_mixture <- hidden_states_matrix[,mixture_indicator]==0
+  #   mc_sleep_mixture <- hidden_states_matrix[,mixture_indicator]==1
+  #   
+  #   init_emp[re_ind,1] <- sum(mc_wake_mixture[1,])/length(mc_wake_mixture[1,])
+  #   init_emp[re_ind,2] <- 1 - init_emp[re_ind,1] 
+  #   
+  #   emit_act_emp[1,1,re_ind] <- mean(act_mixture[mc_wake_mixture])
+  #   emit_act_emp[1,2,re_ind]  <- sqrt(var(act_mixture[mc_wake_mixture]))
+  #   emit_act_emp[2,1,re_ind]  <- mean(act_mixture[mc_sleep_mixture])
+  #   emit_act_emp[2,2,re_ind]  <- sqrt(var(act_mixture[mc_sleep_mixture]))
+  #   
+  #   emit_light_emp[1,1,re_ind] <- mean(light_mixture[mc_wake_mixture])
+  #   emit_light_emp[1,2,re_ind] <- sqrt(var(light_mixture[mc_wake_mixture]))
+  #   emit_light_emp[2,1,re_ind] <- mean(light_mixture[mc_sleep_mixture])
+  #   emit_light_emp[2,2,re_ind] <- sqrt(var(light_mixture[mc_sleep_mixture]))
+  #   
+  #   corr_mat_emp[re_ind,1] <- cor(act_mixture[mc_wake_mixture],light_mixture[mc_wake_mixture])
+  #   corr_mat_emp[re_ind,2] <- cor(act_mixture[mc_sleep_mixture],light_mixture[mc_sleep_mixture])
+  #   
+  #   pi_l_emp[re_ind] <- sum(mixture_indicator)/num_of_people
+  # }
   
   surv_list <- SimSurvival(mixture_mat,beta_mat_true,fcovar_vec)
   
-  beta_vec_long_emp <- as.vector(rev(coxph(Surv(surv_list[[1]], surv_list[[2]]) ~fcovar_mat[,c(fcovar_num:1)] + mixture_mat[,c(mix_num:1)])$coefficients))
-  
-  beta_vec_emp <- beta_vec_long_emp[1:mix_num]
-  beta_vec_emp[1] <- 0
-  
-  beta_vec_fcovar_emp <- beta_vec_long_emp[(mix_num+1):length(beta_vec_long_emp)]
-  beta_vec_fcovar_emp[1] <- 0
-  
-  if (fcovar_num == 1){
-    beta_mat_emp <- replicate(fcovar_num, beta_vec_emp)
-  } else {
-    beta_mat_emp <- replicate(fcovar_num, beta_vec_emp) + t(replicate(mix_num,beta_vec_fcovar_emp))
-  }
+  # beta_vec_long_emp <- as.vector(rev(coxph(Surv(surv_list[[1]], surv_list[[2]]) ~fcovar_mat[,c(fcovar_num:1)] + mixture_mat[,c(mix_num:1)])$coefficients))
+  # 
+  # beta_vec_emp <- beta_vec_long_emp[1:mix_num]
+  # beta_vec_emp[1] <- 0
+  # 
+  # beta_vec_fcovar_emp <- beta_vec_long_emp[(mix_num+1):length(beta_vec_long_emp)]
+  # beta_vec_fcovar_emp[1] <- 0
+  # 
+  # if (fcovar_num == 1){
+  #   beta_mat_emp <- replicate(fcovar_num, beta_vec_emp)
+  # } else {
+  #   beta_mat_emp <- replicate(fcovar_num, beta_vec_emp) + t(replicate(mix_num,beta_vec_fcovar_emp))
+  # }
   
   
   
   # beta_vec_emp <- c(0,summary(cph_fit)$coefficients[,1])
   
-  emp_params <- list(init_emp,params_tran_array_emp,params_tran_array_fcovar_emp,emit_act_emp,
-                     emit_light_emp,corr_mat_emp,pi_l_emp,beta_mat_emp)
+  # emp_params <- list(init_emp,params_tran_array_emp,params_tran_array_fcovar_emp,emit_act_emp,
+  #                    emit_light_emp,corr_mat_emp,pi_l_emp,beta_mat_emp)
   
 
   light_matrix[light_matrix<lod_light] <- lod_light
@@ -416,7 +429,7 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,params_t
   
 
   
-  return(list(hidden_states_matrix,activity_matrix,light_matrix,mixture_mat,fcovar_mat,vcovar_mat,emp_params,surv_list))
+  return(list(hidden_states_matrix,activity_matrix,light_matrix,mixture_mat,fcovar_mat,vcovar_mat,surv_list))
 }
 
 CondMarginalize <- function(alpha,beta,pi_l){
@@ -551,7 +564,7 @@ CalcTranHelperRDEP <- function(init_state, new_state, act, light, tran_list_mat,
 
 
 CalcTranHelper <- function(act, light, tran_list_mat, emit_act, 
-                 emit_light, ind_like_vec, alpha, beta, lod_act, lod_light, 
+                 emit_light,emit_act_fcovar,emit_light_fcovar, ind_like_vec, alpha, beta, lod_act, lod_light, 
                  corr_mat, lintegral_mat, pi_l,fcovar_vec,vcovar_mat){
   
   num_people = dim(act)[2]
@@ -565,7 +578,9 @@ CalcTranHelper <- function(act, light, tran_list_mat, emit_act,
       for (clust_i in 1:num_re){
         tran_vals_re_array[init_state,new_state,,,clust_i] <- CalcTranHelperC(init_state = init_state-1, new_state = new_state-1,act = act,
                                                           light = light,tran_list_mat = tran_list_mat,
-                                                          emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
+                                                          emit_act = emit_act,emit_light = emit_light,
+                                                          emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
+                                                          ind_like_vec = ind_like_vec,
                                                           alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                                           corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l,
                                                           clust_i = clust_i-1, fcovar_vec = fcovar_vec-1, vcovar_mat = vcovar_mat)
@@ -583,7 +598,7 @@ Symmetricize <- function(mat){
 }
 
   
-CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat, fcovar_vec, vcovar_mat){
+CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light,emit_act_fcovar,emit_light_fcovar,corr_mat,pi_l,lod_act,lod_light,lintegral_mat, fcovar_vec, vcovar_mat){
   
   len <- dim(act)[1]
   mix_num <- dim(emit_act)[3]
@@ -612,7 +627,9 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
   
   tran_vals_re_array <- CalcTranHelper(act = act,
                                        light = light,tran_list_mat = tran_list_mat,
-                                       emit_act = emit_act,emit_light = emit_light,ind_like_vec = ind_like_vec,
+                                       emit_act = emit_act,emit_light = emit_light,
+                                       emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
+                                       ind_like_vec = ind_like_vec,
                                        alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                        corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l,
                                        fcovar_vec = fcovar_vec,vcovar_mat = vcovar_mat[-1,])
@@ -672,7 +689,7 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
           
           for (vcovar_ind in 1:vcovar_num){
           
-            # Derivate of b's
+            # Double derivate of b's
             gradient[init_state,1,re_ind,vcovar_ind] <- gradient[init_state,1,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*(vcovar_vecR==vcovar_ind))
             gradient[init_state,2,re_ind,vcovar_ind] <- gradient[init_state,2,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*cos_vec*(vcovar_vecR==vcovar_ind))
             gradient[init_state,3,re_ind,vcovar_ind] <- gradient[init_state,3,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*sin_vec*(vcovar_vecR==vcovar_ind))
@@ -687,7 +704,7 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
             cos_sin_part[init_state,re_ind,vcovar_ind] <- cos_sin_part[init_state,re_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime_prime*cos_vec*sin_vec*(vcovar_vecR==vcovar_ind))
             
             
-            # Derivatives of a's
+            # Double derivatives of a's
             gradient_fcovar[init_state,1,fcovar_ind,vcovar_ind] <- gradient_fcovar[init_state,1,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*(vcovar_vecR==vcovar_ind))
             gradient_fcovar[init_state,2,fcovar_ind,vcovar_ind] <- gradient_fcovar[init_state,2,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*cos_vec*(vcovar_vecR==vcovar_ind))
             gradient_fcovar[init_state,3,fcovar_ind,vcovar_ind] <- gradient_fcovar[init_state,3,fcovar_ind,vcovar_ind] + sum(tran_vals[,ind,re_ind]*tran_prime*sin_vec*(vcovar_vecR==vcovar_ind))
@@ -780,7 +797,10 @@ CalcTranC <- function(alpha,beta,act,light,params_tran_array,emit_act,emit_light
       params_tran_vec <- c(as.vector(t(params_tran_array[,array_inds,vcovar_ind])),
                            as.vector(t(params_tran_array_fcovar[,array_inds,vcovar_ind])))
       
-      params_tran_vec_new <- params_tran_vec - solve(-hess,-grad,tol = 1e-50)
+      inf_mat <- solve(-hess,-grad, tol = 1e-50)
+      if(any(abs(inf_mat)> 2) ){inf_mat <- inf_mat/max(abs(inf_mat))}
+      
+      params_tran_vec_new <- params_tran_vec - inf_mat
       
       
       params_tran_array_new[,array_inds,vcovar_ind] <- matrix(params_tran_vec_new[1:(3*mix_num)],ncol = 3,byrow = T)
@@ -1148,16 +1168,30 @@ for (vcovar_num_ind in 1:vcovar_num){
 }
 
 emit_act_true <- array(NA, c(2,2,mix_num))
-emit_act_true[1,1,] <- seq(6,7,length.out = mix_num)
+emit_act_true[1,1,] <- seq(4,5,length.out = mix_num)
 emit_act_true[1,2,] <- seq(1,2,length.out = mix_num)
 emit_act_true[2,1,] <- seq(1,0,length.out = mix_num)
 emit_act_true[2,2,] <- seq(2,1,length.out = mix_num)
 
 emit_light_true <- array(NA, c(2,2,mix_num))
-emit_light_true[1,1,] <- seq(8,9,length.out = mix_num)
-emit_light_true[1,2,] <- seq(2,3,length.out = mix_num)
-emit_light_true[2,1,] <- seq(2,1,length.out = mix_num)
+emit_light_true[1,1,] <- seq(6,7,length.out = mix_num)
+emit_light_true[1,2,] <- seq(1,2,length.out = mix_num)
+emit_light_true[2,1,] <- seq(1,0,length.out = mix_num)
 emit_light_true[2,2,] <- seq(1,2,length.out = mix_num)
+
+emit_act_fcovar_true <- array(NA, c(2,2,fcovar_num))
+emit_act_fcovar_true[1,1,] <- seq(2,0,length.out = fcovar_num)
+emit_act_fcovar_true[1,2,] <- seq(2,0,length.out = fcovar_num)
+emit_act_fcovar_true[2,1,] <- seq(0,1,length.out = fcovar_num)
+emit_act_fcovar_true[2,2,] <- seq(0,1,length.out = fcovar_num)
+emit_act_fcovar_true <- array(0, c(2,2,fcovar_num))
+
+emit_light_fcovar_true <- array(NA, c(2,2,fcovar_num))
+emit_light_fcovar_true[1,1,] <- seq(3,0,length.out = fcovar_num)
+emit_light_fcovar_true[1,2,] <- seq(2,1,length.out = fcovar_num)
+emit_light_fcovar_true[2,1,] <- seq(0,1,length.out = fcovar_num)
+emit_light_fcovar_true[2,2,] <- seq(0,1,length.out = fcovar_num)
+emit_light_fcovar_true <- array(0, c(2,2,fcovar_num))
 
 corr_mat_true <- matrix(0,ncol = 2,nrow = mix_num)
 
@@ -1176,14 +1210,14 @@ if (fcovar_num == 1){
 lod_act_true <- 0
 lod_light_true <- 0
 pi_l_true <- rep(1/mix_num,mix_num)
-
 ###### Simulate Data ###### 
 if (!real_data){
   simulated_hmm <- SimulateHMM(day_length,num_of_people,
-                                init=init_true,params_tran_array = params_tran_array_true, params_tran_array_fcovar = params_tran_array_fcovar_true,
-                                emit_act = emit_act_true,emit_light = emit_light_true,corr_mat = corr_mat_true,
-                                lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true,
-                                missing_perc = missing_perc, beta_mat_true = beta_mat_true)
+                               init=init_true,params_tran_array = params_tran_array_true, params_tran_array_fcovar = params_tran_array_fcovar_true,
+                               emit_act = emit_act_true,emit_light = emit_light_true,
+                               emit_act_fcovar = emit_act_fcovar_true,emit_light_fcovar = emit_light_fcovar_true,corr_mat = corr_mat_true,
+                               lod_act = lod_act_true,lod_light = lod_light_true,pi_l = pi_l_true,
+                               missing_perc = missing_perc, beta_mat_true = beta_mat_true)
   mc <- simulated_hmm[[1]]
   act <- simulated_hmm[[2]]
   light <- simulated_hmm[[3]]
@@ -1192,20 +1226,20 @@ if (!real_data){
   fcovar_vec <- apply(fcovar_mat,1,ChooseMixture)
   vcovar_mat <- simulated_hmm[[6]]
   
-  emp_params <- simulated_hmm[[7]]
-  surv_list <- simulated_hmm[[8]]
+  # emp_params <- simulated_hmm[[7]]
+  surv_list <- simulated_hmm[[7]]
   
   surv_time <- surv_list[[1]]
   surv_event <- surv_list[[2]]
   
-  init_emp <- emp_params[[1]]
-  params_tran_array_emp <- emp_params[[2]]
-  params_tran_array_fcovar_emp <- emp_params[[3]]
-  emit_act_emp <- emp_params[[4]]
-  emit_light_emp <- emp_params[[5]]
-  corr_mat_emp <- emp_params[[6]]
-  pi_l_emp <- emp_params[[7]]
-  beta_mat_emp <- emp_params[[8]]
+  # init_emp <- emp_params[[1]]
+  # params_tran_array_emp <- emp_params[[2]]
+  # params_tran_array_fcovar_emp <- emp_params[[3]]
+  # emit_act_emp <- emp_params[[4]]
+  # emit_light_emp <- emp_params[[5]]
+  # corr_mat_emp <- emp_params[[6]]
+  # pi_l_emp <- emp_params[[7]]
+  # beta_mat_emp <- emp_params[[8]]
   
 } 
 
@@ -1317,6 +1351,15 @@ runif_tol <- .2
 
 emit_act <- emit_act_true + runif(length(unlist(emit_act_true)),-runif_tol,runif_tol)
 emit_light <- emit_light_true + runif(length(unlist(emit_light_true)),-runif_tol,runif_tol)
+
+emit_act_fcovar <- emit_act_fcovar_true + runif(length(unlist(emit_act_fcovar_true)),-runif_tol,runif_tol)
+emit_light_fcovar <- emit_light_fcovar_true + runif(length(unlist(emit_light_fcovar_true)),-runif_tol,runif_tol)
+emit_act_fcovar[emit_act_fcovar <0]<-0
+emit_light_fcovar[emit_light_fcovar <0]<-0
+
+# emit_act_fcovar[emit_act_fcovar < 9999] <- 0
+# emit_light_fcovar[emit_light_fcovar < 9999] <- 0
+
 corr_mat <- corr_mat_true + runif(length(unlist(corr_mat_true)),-runif_tol,runif_tol)
 # beta_vec <- beta_vec_true[2:mix_num] + runif((mix_num-1),-runif_tol,runif_tol)
 # beta_vec <- c(0,beta_vec)
@@ -1349,7 +1392,7 @@ bhaz_vec <- CalcBLHaz(beta_mat,re_prob,surv_event,surv_time,fcovar_vec)
 bline_vec <- bhaz_vec[[1]]
 cbline_vec <- bhaz_vec[[2]]
 
-lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
+lintegral_mat <- CalcLintegralMat(emit_act,emit_light,emit_act_fcovar,emit_light_fcovar,corr_mat,lod_act,lod_light)
 
 # tran_list <- lapply(c(1:mix_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:96))
 tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
@@ -1359,17 +1402,19 @@ tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_leng
 alpha <- ForwardC(act = act,light = light,
          init = init,tran_list = tran_list,
          emit_act = emit_act,emit_light = emit_light,
+         emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
          lod_act = lod_act, lod_light =  lod_light, 
          corr_mat = corr_mat, beta_mat = beta_mat,
          event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
          lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
-         fcovar_vec = fcovar_vec, vcovar_mat = vcovar_mat)
+         fcovar_vec = fcovar_vec-1, vcovar_mat = vcovar_mat)
 
 beta <- BackwardC(act = act,light = light, tran_list = tran_list,
               emit_act = emit_act,emit_light = emit_light,
+              emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
               lod_act = lod_act, lod_light =  lod_light, 
               corr_mat = corr_mat,lintegral_mat = lintegral_mat,
-              fcovar_vec = fcovar_vec, vcovar_mat = vcovar_mat)
+              fcovar_vec = fcovar_vec-1, vcovar_mat = vcovar_mat)
          
 
 new_likelihood <- CalcLikelihood(alpha,pi_l)
@@ -1378,7 +1423,6 @@ likelihood <- -Inf
 like_diff <- new_likelihood - likelihood
 
 # apply(alpha[[1]][,,1]+beta[[1]][,,1],1,logSumExp)
-# break
 beta_counter <- 0
 beta_bool <- F
 while(abs(like_diff) > 1e-4 * 1e-10){
@@ -1390,7 +1434,9 @@ while(abs(like_diff) > 1e-4 * 1e-10){
   ##### MC Param  #####
 
   # init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
-  params_tran_array_list <- CalcTranC(alpha,beta,act,light,params_tran_array,emit_act,emit_light,corr_mat,pi_l,lod_act,lod_light,lintegral_mat,fcovar_vec,vcovar_mat)
+  # params_tran_array_list <- CalcTranC(alpha,beta,act,light,params_tran_array,emit_act,emit_light,
+  #                                     emit_act_fcovar,emit_light_fcovar,corr_mat,pi_l,lod_act,
+  #                                     lod_light,lintegral_mat,fcovar_vec,vcovar_mat)
   params_tran_array <- params_tran_array_list[[1]]
   params_tran_array_fcovar <- params_tran_array_list[[2]]
   
@@ -1407,12 +1453,14 @@ while(abs(like_diff) > 1e-4 * 1e-10){
   
   ##### Mixing Proportion  #####
   
-  re_prob <- CalcProbRE(alpha,pi_l)
-  pi_l <- colSums(re_prob)/dim(act)[2]
-  pi_l[pi_l<1e-100] <- 1e-100
-  if (mix_num <= 1){pi_l <- c(1)}
+  # re_prob <- CalcProbRE(alpha,pi_l)
+  # pi_l <- colSums(re_prob)/dim(act)[2]
+  # pi_l[pi_l<1e-100] <- 1e-100
+  # if (mix_num <= 1){pi_l <- c(1)}
   
   ##### Bivariate Normal Est  #####
+  
+  emit_act[1,1,] <- TestMixMu()
   
   # corr_mat[,1] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
   # corr_mat[,2] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep)
@@ -1431,29 +1479,29 @@ while(abs(like_diff) > 1e-4 * 1e-10){
   
   ##### Survival ####
   # if(beta_bool){
-    beta_mat <- CalcBeta(beta_mat)
-    bhaz_vec <- CalcBLHaz(beta_mat,re_prob,surv_event,surv_time,fcovar_vec)
-    bline_vec <- bhaz_vec[[1]]
-    cbline_vec <- bhaz_vec[[2]]
+  #   beta_mat <- CalcBeta(beta_mat)
+  #   bhaz_vec <- CalcBLHaz(beta_mat,re_prob,surv_event,surv_time,fcovar_vec)
+  #   bline_vec <- bhaz_vec[[1]]
+  #   cbline_vec <- bhaz_vec[[2]]
   # }
   
   
   ##### Reorder #####
   #Reorder to avoid label switching
   #Cluster means go from small to large by activity
-  if (mix_num > 1){
-    reord_inds <- c(1,order(beta_mat[2:mix_num,1])+1)
-    emit_act <- emit_act[,,reord_inds]
-    emit_light <- emit_light[,,reord_inds]
-    pi_l <- pi_l[reord_inds]
-    re_prob <- re_prob[,reord_inds]
-    params_tran_array <- params_tran_array[reord_inds,,]
-    dim(params_tran_array) <- params_tran_array_dim
-    corr_mat <- corr_mat[reord_inds,]
-    init <- init[reord_inds,]
-    beta_mat <- beta_mat[reord_inds,]
-    if(!real_data){mixture_mat <- mixture_mat[,reord_inds]}
-  }
+  # if (mix_num > 1){
+  #   reord_inds <- c(1,order(beta_mat[2:mix_num,1])+1)
+  #   emit_act <- emit_act[,,reord_inds]
+  #   emit_light <- emit_light[,,reord_inds]
+  #   pi_l <- pi_l[reord_inds]
+  #   re_prob <- re_prob[,reord_inds]
+  #   params_tran_array <- params_tran_array[reord_inds,,]
+  #   dim(params_tran_array) <- params_tran_array_dim
+  #   corr_mat <- corr_mat[reord_inds,]
+  #   init <- init[reord_inds,]
+  #   beta_mat <- beta_mat[reord_inds,]
+  #   if(!real_data){mixture_mat <- mixture_mat[,reord_inds]}
+  # }
   
   for (re_ind in 1:mix_num){
     if (emit_act[2,1,re_ind] > emit_act[1,1,re_ind]){
@@ -1485,22 +1533,24 @@ while(abs(like_diff) > 1e-4 * 1e-10){
   # tran_list <- lapply(c(1:mix_num),TranByTimeVec, params_tran = params_tran, time_vec = c(1:day_length))
   # x <- lapply(c(1:mix_num),Params2TranVectorT, len = len, params_tran = params_tran)
   tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
-  lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
+  lintegral_mat <- CalcLintegralMat(emit_act,emit_light,emit_act_fcovar,emit_light_fcovar,corr_mat,lod_act,lod_light)
   
   alpha <- ForwardC(act = act,light = light,
                     init = init,tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
+                    emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
                     lod_act = lod_act, lod_light =  lod_light, 
                     corr_mat = corr_mat, beta_mat = beta_mat,
                     event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
                     lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
-                    fcovar_vec = fcovar_vec, vcovar_mat = vcovar_mat)
+                    fcovar_vec = fcovar_vec-1, vcovar_mat = vcovar_mat)
   
   beta <- BackwardC(act = act,light = light, tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
+                    emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
                     lod_act = lod_act, lod_light =  lod_light, 
                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,
-                    fcovar_vec = fcovar_vec, vcovar_mat = vcovar_mat)
+                    fcovar_vec = fcovar_vec-1, vcovar_mat = vcovar_mat)
   
   
   
@@ -1539,8 +1589,6 @@ if(!real_data){to_save <- list(true_params,emp_params,est_params,bic)
 
 readCpp( "cFunctions.cpp" )
 
-##TODO 
-##Extend emit_act,emit_light, and cor_mat to another dimension for fixed covar
 
 
 
@@ -1548,25 +1596,40 @@ TranGrad <- function(params_tran_vec){
   len <- prod(params_tran_array_dim)
   params_tran_vec1 <- params_tran_vec[1:len]
   params_tran_vec2 <- params_tran_vec[(len+1):length(params_tran_vec)]
-  
+
   params_tran_array <- array(params_tran_vec1, dim = params_tran_array_dim)
   params_tran_array_fcovar <- array(params_tran_vec2, dim = params_tran_array_fcovar_dim)
-  
+
   tran_list <- GenTranList(params_tran_array,params_tran_array_fcovar,c(1:day_length),mix_num,fcovar_num,vcovar_num)
   alpha <- ForwardC(act = act,light = light,
                     init = init,tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
-                    lod_act = lod_act, lod_light =  lod_light, 
+                    emit_act_fcovar = emit_act_fcovar,emit_light_fcovar = emit_light_fcovar,
+                    lod_act = lod_act, lod_light =  lod_light,
                     corr_mat = corr_mat, beta_mat = beta_mat,
                     event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
                     lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
-                    fcovar_vec = fcovar_vec, vcovar_mat = vcovar_mat)
-  
+                    fcovar_vec = fcovar_vec-1, vcovar_mat = vcovar_mat)
+
   return(CalcLikelihood(alpha,pi_l))
 }
+
 params_tran_vec <- c(as.vector(params_tran_array),as.vector(params_tran_array_fcovar))
 TranGrad(params_tran_vec)
-tgrad <- hessian(TranGrad, params_tran_vec)
+tgrad <- grad(TranGrad, params_tran_vec)
 
-###THIS WORKS BC THIS GIVES SAME OUTPUT AS CALCTRANC
-# NExt step is to work out structure of hessian
+TestMixMu <- function(){
+  mu_vec <- numeric(mix_num)
+  for (re_ind in 1:mix_num){
+    num <- 0
+    denom <- sum(weights_array_wake[,,re_ind])
+    for (i in 1:num_of_people){
+      fcovar_ind <- fcovar_vec[i]
+      num <- num + sum(weights_array_wake[,i,re_ind] * (act[,i] - emit_act_fcovar[1,1,fcovar_ind]),na.rm = T)
+    }
+    mu_vec[re_ind] <- num/denom
+  }
+  return(mu_vec)
+}
+
+
