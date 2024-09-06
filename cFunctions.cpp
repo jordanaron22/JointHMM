@@ -134,32 +134,52 @@ double logSumExpC(const arma::vec& x) {
 }
 
 // [[Rcpp::export]]
-mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act, cube emit_light, int clust_i, double lod_act, double lod_light, NumericVector corr_vec, vec beta_vec, int event, double bline, double cbline, mat lintegral_mat, double log_sweight, vec vcovar_vec){
+mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act_week, cube emit_light_week,  cube emit_act_weekend, cube emit_light_weekend, int clust_i, double lod_act, double lod_light, cube corr_vec, vec beta_vec, double beta_age, double age, int event, double bline, double cbline, cube lintegral_mat, double log_sweight, vec vcovar_vec){
 
 	mat alpha( act_ind.length(), 2 );
-
-	vec log_class_0 = logClassificationC( act_ind, light_ind, 
-                                       emit_act(0,0,clust_i), 
-                                       emit_act(0,1,clust_i), 
-                                       emit_light(0,0,clust_i),
-                                       emit_light(0,1,clust_i), 
-                                       lod_act, lod_light, corr_vec(0), lintegral_mat(clust_i,0));
+  
+  vec log_class_0_week = logClassificationC( act_ind, light_ind, 
+                                             emit_act_week(0,0,clust_i), 
+                                             emit_act_week(0,1,clust_i), 
+                                             emit_light_week(0,0,clust_i),
+                                             emit_light_week(0,1,clust_i), 
+                                             lod_act, lod_light, corr_vec(clust_i,0,0), lintegral_mat(clust_i,0,0));
+  
+  vec log_class_1_week = logClassificationC( act_ind, light_ind, 
+                                             emit_act_week(1,0,clust_i),
+                                             emit_act_week(1,1,clust_i),
+                                             emit_light_week(1,0,clust_i),
+                                             emit_light_week(1,1,clust_i),
+                                             lod_act, lod_light, corr_vec(clust_i,1,0), lintegral_mat(clust_i,1,0));
+  
+  vec log_class_0_weekend = logClassificationC( act_ind, light_ind, 
+                                                emit_act_weekend(0,0,clust_i), 
+                                                emit_act_weekend(0,1,clust_i), 
+                                                emit_light_weekend(0,0,clust_i),
+                                                emit_light_weekend(0,1,clust_i), 
+                                                lod_act, lod_light, corr_vec(clust_i,0,1), lintegral_mat(clust_i,0,1));
+  
+  vec log_class_1_weekend = logClassificationC( act_ind, light_ind, 
+                                                emit_act_weekend(1,0,clust_i),
+                                                emit_act_weekend(1,1,clust_i),
+                                                emit_light_weekend(1,0,clust_i),
+                                                emit_light_weekend(1,1,clust_i),
+                                                lod_act, lod_light, corr_vec(clust_i,1,1), lintegral_mat(clust_i,1,1));
 	
-	vec log_class_1 = logClassificationC( act_ind, light_ind, 
-                                       emit_act(1,0,clust_i),
-                                       emit_act(1,1,clust_i),
-                                       emit_light(1,0,clust_i),
-                                       emit_light(1,1,clust_i),
-                                       lod_act, lod_light, corr_vec(1), lintegral_mat(clust_i,1));
 	
+	vec log_class_0 = (log_class_0_week % (1-vcovar_vec)) + (log_class_0_weekend % vcovar_vec); 
+	vec log_class_1 = (log_class_1_week % (1-vcovar_vec)) + (log_class_1_weekend % vcovar_vec);
 
 	double surv_comp;
 
+	
 	if (event == 1){
-		surv_comp = log(bline) + beta_vec[clust_i] - (cbline * exp(beta_vec[clust_i]));
+	  surv_comp = log(bline) + beta_vec[clust_i]+(beta_age * age) - (cbline * exp(beta_vec[clust_i]+(beta_age * age)));
 	} else {
-		surv_comp =  -cbline * exp(beta_vec[clust_i]);
+	  surv_comp =  -cbline * exp(beta_vec[clust_i]+(beta_age * age));
 	}
+	
+	
 
 	alpha(0,0) = log(init(0)) + log_class_0[0] + surv_comp;
 	alpha(0,1) = log(init(1)) + log_class_1[0] + surv_comp;
@@ -192,24 +212,43 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 }
 
 // [[Rcpp::export]]
-mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Rcpp::List tran_list, cube emit_act, cube emit_light,int clust_i, double lod_act, double lod_light, NumericVector corr_vec, mat lintegral_mat, vec vcovar_vec){
+mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Rcpp::List tran_list, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend,int clust_i, double lod_act, double lod_light, cube corr_vec, cube lintegral_mat, vec vcovar_vec){
   
   int n = act_ind.length(); 
   mat beta( n, 2 );
   
-  vec log_class_0 = logClassificationC( act_ind, light_ind, 
-                                        emit_act(0,0,clust_i), 
-                                        emit_act(0,1,clust_i), 
-                                        emit_light(0,0,clust_i), 
-                                        emit_light(0,1,clust_i), 
-                                        lod_act, lod_light, corr_vec(0), lintegral_mat(clust_i,0));
+  vec log_class_0_week = logClassificationC( act_ind, light_ind, 
+                                             emit_act_week(0,0,clust_i), 
+                                             emit_act_week(0,1,clust_i), 
+                                             emit_light_week(0,0,clust_i),
+                                             emit_light_week(0,1,clust_i), 
+                                             lod_act, lod_light, corr_vec(clust_i,0,0), lintegral_mat(clust_i,0,0));
   
-  vec log_class_1 = logClassificationC( act_ind, light_ind, 
-                                        emit_act(1,0,clust_i), 
-                                        emit_act(1,1,clust_i), 
-                                        emit_light(1,0,clust_i), 
-                                        emit_light(1,1,clust_i), 
-                                        lod_act, lod_light, corr_vec(1), lintegral_mat(clust_i,1));
+  vec log_class_1_week = logClassificationC( act_ind, light_ind, 
+                                             emit_act_week(1,0,clust_i),
+                                             emit_act_week(1,1,clust_i),
+                                             emit_light_week(1,0,clust_i),
+                                             emit_light_week(1,1,clust_i),
+                                             lod_act, lod_light, corr_vec(clust_i,1,0), lintegral_mat(clust_i,1,0));
+  
+  vec log_class_0_weekend = logClassificationC( act_ind, light_ind, 
+                                                emit_act_weekend(0,0,clust_i), 
+                                                emit_act_weekend(0,1,clust_i), 
+                                                emit_light_weekend(0,0,clust_i),
+                                                emit_light_weekend(0,1,clust_i), 
+                                                lod_act, lod_light, corr_vec(clust_i,0,1), lintegral_mat(clust_i,0,1));
+  
+  vec log_class_1_weekend = logClassificationC( act_ind, light_ind, 
+                                                emit_act_weekend(1,0,clust_i),
+                                                emit_act_weekend(1,1,clust_i),
+                                                emit_light_weekend(1,0,clust_i),
+                                                emit_light_weekend(1,1,clust_i),
+                                                lod_act, lod_light, corr_vec(clust_i,1,1), lintegral_mat(clust_i,1,1));
+	
+	
+	vec log_class_0 = (log_class_0_week % (1-vcovar_vec)) + (log_class_0_weekend % vcovar_vec); 
+	vec log_class_1 = (log_class_1_week % (1-vcovar_vec)) + (log_class_1_weekend % vcovar_vec); 
+	  
   beta(n-1,0) = log(1);
   beta(n-1,1) = log(1);
   
@@ -241,14 +280,14 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
 }
 
 // [[Rcpp::export]]
-List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act, cube emit_light, double lod_act, double lod_light, NumericMatrix corr_mat, mat beta_mat, vec event_vec, vec bline_vec, vec cbline_vec, mat lintegral_mat, NumericVector log_sweights_vec, vec fcovar_vec, mat vcovar_mat){
+List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, double lod_act, double lod_light, cube corr_mat, vec beta_vec, double beta_age, vec event_vec, vec bline_vec, vec cbline_vec, cube lintegral_mat, NumericVector log_sweights_vec, vec age_vec, mat vcovar_mat){
 	int num_people = act.ncol();
 	int len = act.nrow();
-	int num_re = emit_act.n_slices;
+	int num_re = emit_act_week.n_slices;
 	List alpha_list(num_people);
 	
 	for (int ind = 0; ind < num_people; ind++) {
-	  int fcovar_ind = fcovar_vec(ind);
+	  int age_ind = age_vec(ind);
 	  
 		arma::cube Cube1(len, 2, num_re);
 		NumericVector act_ind = act.column(ind);
@@ -256,13 +295,11 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 		double log_sweight = log_sweights_vec(ind);
 		
 		vec vcovar_vec = vcovar_mat.col(ind);
-		vec beta_vec = beta_mat.col(fcovar_ind);
 		
 		for (int clust_i = 0; clust_i < num_re; clust_i++){
-			NumericVector corr_vec = corr_mat.row(clust_i);
 			NumericVector init_vec = init.row(clust_i);
 
-			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act, emit_light,clust_i, lod_act, lod_light, corr_vec, beta_vec, event_vec[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, log_sweight, vcovar_vec);
+			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act_week, emit_light_week, emit_act_weekend, emit_light_weekend,clust_i, lod_act, lod_light, corr_mat, beta_vec, beta_age,age_ind,event_vec[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, log_sweight, vcovar_vec);
 
 		}
 
@@ -272,11 +309,11 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 }
 
 // [[Rcpp::export]]
-List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, cube emit_act, cube emit_light, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, mat vcovar_mat){
+List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, double lod_act, double lod_light, cube corr_mat, cube lintegral_mat, mat vcovar_mat){
 
 	int num_people = act.ncol();
 	int len = act.nrow();
-	int num_re = emit_act.n_slices;
+	int num_re = emit_act_week.n_slices;
 	List beta_list(num_people);
 	
 	for (int ind = 0; ind < num_people; ind++) {
@@ -288,9 +325,8 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 		vec vcovar_vec = vcovar_mat.col(ind);
 		
 		for (int clust_i = 0; clust_i < num_re; clust_i++){
-			NumericVector corr_vec = corr_mat.row(clust_i);
 
-			Cube1.slice(clust_i) = BackwardIndC(act_ind, light_ind, tran_list, emit_act, emit_light, clust_i, lod_act, lod_light, corr_vec, lintegral_mat, vcovar_vec);
+			Cube1.slice(clust_i) = BackwardIndC(act_ind, light_ind, tran_list, emit_act_week, emit_light_week, emit_act_weekend, emit_light_weekend, clust_i, lod_act, lod_light, corr_mat, lintegral_mat, vcovar_vec);
 
 		}
 
@@ -301,14 +337,15 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 
 
 // [[Rcpp::export]]
-mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, cube emit_act, cube emit_light, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, NumericMatrix corr_mat, mat lintegral_mat, vec pi_l, int clust_i, mat vcovar_mat){
+mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, cube corr_mat, cube lintegral_mat, mat pi_l, int clust_i, mat vcovar_mat){
   int num_people = act.ncol();
   int len = act.nrow();
   
   mat tran_vals_re_mat( len-1, num_people );
-  NumericVector corr_vec = corr_mat.row(clust_i);
   
   for (int ind = 0; ind < num_people; ind++) {
+    
+    vec vcovar_vec = vcovar_mat.col(ind);
     
     List tran_list_clust = tran_list_mat[clust_i];
     mat tran_mat = tran_list_clust(0);
@@ -317,7 +354,7 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
       mat tran_mat_week = tran_list_clust(0);
       mat tran_mat_weekend = tran_list_clust(1);
       
-      vec vcovar_vec = vcovar_mat.col(ind);
+      
       tran_mat_week.each_col() %= (1-vcovar_vec);
       tran_mat_weekend.each_col() %= vcovar_vec;
       tran_mat = tran_mat_week + tran_mat_weekend;
@@ -338,18 +375,27 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
     NumericMatrix light_ind = light( Range(1,len-1) , Range(ind,ind) );
     NumericVector light_ind_m1 = light_ind.column(0); 
     
-    vec class_vec = logClassificationC( act_ind, light_ind, 
-                                          emit_act(new_state,0,clust_i), 
-                                          emit_act(new_state,1,clust_i), 
-                                          emit_light(new_state,0,clust_i), 
-                                          emit_light(new_state,1,clust_i),
-                                          lod_act, lod_light, corr_vec(new_state), lintegral_mat(clust_i,new_state));
+    vec class_vec_week = logClassificationC( act_ind, light_ind, 
+                                             emit_act_week(new_state,0,clust_i), 
+                                             emit_act_week(new_state,1,clust_i), 
+                                             emit_light_week(new_state,0,clust_i), 
+                                             emit_light_week(new_state,1,clust_i),
+                                             lod_act, lod_light, corr_mat(clust_i,new_state,0), lintegral_mat(clust_i,new_state,0));    
+    
+    vec class_vec_weekend = logClassificationC( act_ind, light_ind, 
+                                                emit_act_weekend(new_state,0,clust_i), 
+                                                emit_act_weekend(new_state,1,clust_i), 
+                                                emit_light_weekend(new_state,0,clust_i), 
+                                                emit_light_weekend(new_state,1,clust_i),
+                                                lod_act, lod_light, corr_mat(clust_i,new_state,1), lintegral_mat(clust_i,new_state,1));
+    
+    vec class_vec = (class_vec_week % (1-vcovar_vec)) + (class_vec_weekend % vcovar_vec); 
     
     vec alpha_ind_slice = alpha_ind(span(0,len-2),span(init_state,init_state),span(clust_i,clust_i));
     vec beta_ind_slice = beta_ind(span(1,len-1),span(new_state,new_state),span(clust_i,clust_i));
     vec tran_vec_slice = tran_mat.col(tran_vec_ind);
     
-    vec temp = alpha_ind_slice + beta_ind_slice + log(tran_vec_slice) + log(pi_l(clust_i)) + class_vec - likelihood;
+    vec temp = alpha_ind_slice + beta_ind_slice + log(tran_vec_slice) + log(pi_l(ind,clust_i)) + class_vec - likelihood;
     vec tran_vals_re_ind = arma::exp(temp);
     
     tran_vals_re_mat.col(ind) = tran_vals_re_ind;
@@ -394,11 +440,9 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
 	  
 	  
 // [[Rcpp::export]]
-List Test(List x){
+vec Test(vec x, vec y){
   
-  cout << x.size();
+  vec z = x % y;
   
-
-  
-  return x;
+  return z;
 } 
