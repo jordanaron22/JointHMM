@@ -34,7 +34,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 		// Observe both act and light
 		if (nan_vec_act(i) != true && nan_vec_light(i) != true){
 			// CASE 1
-			if(act_obs != lod_act & light_obs != lod_light){
+			if(act_obs >= lod_act & light_obs >= lod_light){
 
 				double mu_light_cond = CalcCondMeanC(mu_light,sig_light,mu_act,sig_act,bivar_corr,act_obs);
 				double sig_light_cond = CalcCondSigC(sig_light,bivar_corr);
@@ -43,7 +43,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			}
 
 			//CASE 2
-			if(act_obs != lod_act & light_obs == lod_light){
+			if(act_obs >= lod_act & light_obs < lod_light){
 
 				double mu_light_cond = CalcCondMeanC(mu_light,sig_light,mu_act,sig_act,bivar_corr,act_obs);
 				double sig_light_cond = CalcCondSigC(sig_light,bivar_corr);
@@ -52,7 +52,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			}
 
 			//CASE 3
-			if(act_obs == lod_act & light_obs != lod_light){
+			if(act_obs < lod_act & light_obs >= lod_light){
 
 				double mu_act_cond = CalcCondMeanC(mu_act,sig_act,mu_light,sig_light,bivar_corr,light_obs);
 				double sig_act_cond = CalcCondSigC(sig_act,bivar_corr);
@@ -61,13 +61,13 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			}
 
 			//CASE 4
-			if(act_obs == lod_act & light_obs == lod_light){
+			if(act_obs < lod_act & light_obs < lod_light){
 				log_dens_vec(i) = lintegral;
 			}
 
 			// Light Missing
 		} else if (nan_vec_act(i) != true && nan_vec_light(i) == true){
-			if(act_obs != lod_act){	
+			if(act_obs >= lod_act){	
 				log_dens_vec(i) = R::dnorm( act_obs, mu_act, sig_act, true );
 			} else {
 				log_dens_vec(i) = R::pnorm( act_obs, mu_act, sig_act, true, true );
@@ -75,7 +75,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			
 			// Act missing
 		} else if((nan_vec_act(i) == true && nan_vec_light(i) != true)){
-			if(light_obs != lod_light){	
+			if(light_obs >= lod_light){	
 				log_dens_vec(i) = R::dnorm( light_obs, mu_light, sig_light, true );
 			} else {
 				log_dens_vec(i) = R::pnorm( light_obs, mu_light, sig_light, true, true );
