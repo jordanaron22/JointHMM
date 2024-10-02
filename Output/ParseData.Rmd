@@ -19,6 +19,7 @@ library(mnormt)
 library(ggfortify)
 library(survival)
 library(survminer)
+library(Rcpp)
 
 expit <- function(x){
   to_ret <- exp(x) / (1+exp(x))
@@ -255,7 +256,7 @@ ggplot(bic_df, aes(x=Mixture, y=BIC)) +
 
 
 load(file_list[which.min(bic_vec)])
-load(file_list[6])
+# load(file_list[2])
 
 
 mix_num <- dim(to_save[[1]][[1]])[1] 
@@ -273,7 +274,7 @@ beta_age <- to_save[[2]][[9]]
 # tran_df <- ParamsArray2DF(params_tran_array)
 tran_df <- to_save[[2]][[10]]
 re_prob <- to_save[[2]][[11]]
-weights_array_list <- to_save[[2]][[12]]
+# weights_array_list <- to_save[[2]][[12]]
 
 ```
 
@@ -301,16 +302,18 @@ print("")
 
 mix_assignment <- apply(re_prob,1,which.max)
 
-surv_data <- data.frame(time = surv_time,
-                        status = surv_event,
-                        group = mix_assignment,
-                        age = age_vec)
+surv_data <- data.frame(time = rep(surv_time,each = mix_num),
+                        status = rep(surv_event, each = mix_num),
+                        group = rep(c(1:mix_num),length(surv_time)),
+                        age = rep(age_vec,each = mix_num),
+                        weights = as.vector(t(re_prob)))
+
 surv_data$group <- as.factor(surv_data$group)
+surv_data <- surv_data %>% filter(weights > 0)
 
+fit <- survfit(Surv(time, status) ~ group, data = surv_data,weights = weights)
 
-fit <- survfit(Surv(time, status) ~ group, data = surv_data)
 ```
-Cluster 0 has the highest rate of survival while cluster 4 has the lowest rate of survival. Cluster 5 also has a low rate of survival
 
 #### Survival curves by mixture assignment 
 
@@ -323,21 +326,15 @@ autoplot(fit, conf.int = F,
 
 ### Log rank test
 
-Log rank shows there exists statistical difference between the groups. This doesn't account for the effect of age, meaning that this significance could be driven only by age (i.e. only young people in one group, only old people in another group) 
-
 ```{r}
-survdiff(Surv(time, status) ~ group, data = surv_data, rho = 0)
+survdiff(Surv(time, status) ~ group + age, data = surv_data, rho = 0)
 
 ```
 
 ### Cox CI
 
-In the future we'll calculate the SE using the hessian to account for possible missclassification but our posterior probabilities given the observed data are very bimodal at either 0 or 1 so I don't expect a large change from this. 
-
-Although the effect of age has by far the smallest p-value, group 4 and 5 also have fairly small p-values. 
-
 ```{r}
-coxph(Surv(time, status) ~ group + age, data = surv_data)
+coxph(Surv(time, status) ~ group + age, data = surv_data,weights = weights)
 ```
 
 # Mixture Probabilities 
@@ -362,8 +359,6 @@ ggplot(pi_df, aes(x = Age,y = Prob)) +
 
 The two plots visualize the same data. In the first the probability of mixture by age for all mixtures is plotted together while the second plot has each mixture separated. 
 
-Cluster 1 skews young, while clusters 4 and 5 skew old. That being said cluster 2 also skews older and has a smaller increase in risk than 4 or 5, so there does seem to be an effect beyond just age. 
-
 
 # Transition
 
@@ -379,14 +374,14 @@ tran_df_wake <-tran_df %>% filter(type == "Waking")
 ggplot(tran_df_wake, aes(x = time,y = prob, color = mixture)) + 
     geom_line() + 
     labs(title = "Waking Probability", x = "Hour", y = "Probability of Waking") +
-    facet_grid(vars(weekend),labeller = labeller(
+    facet_wrap(vars(weekend),labeller = labeller(
       weekend = c("1" = "Week", "2" = "Weekend")))+
     scale_color_viridis(discrete=TRUE,end = .95) 
 
 ggplot(tran_df_wake, aes(x = time,y = prob, color = weekend)) + 
     geom_line() + 
     labs(title = "Waking Probability", x = "Hour", y = "Probability of Waking") +
-    facet_grid(vars(mixture))+
+    facet_wrap(vars(mixture))+
     scale_color_viridis(discrete=TRUE,end = .95,
                         name = "Day Type", labels = c("Week","Weekend")) 
 
@@ -395,34 +390,27 @@ ggplot(tran_df_wake, aes(x = time,y = prob, color = weekend)) +
 
 The above 2 plots visualize the same data in two ways. In the first, wake probabilities for each mixture are plotted together and separated by week/weekend. In the second wake probability for week/weekend are plotted together and separated by mixture.
 
-Mixtures 3,5, and 6 have lower wake probability. This parameter doesn't have a straightforward interpretation but I think about it as a geometric distribution governing how long you remain asleep, so a lower probability means a delay in when you wake up
-
-The weekend wake distributions still show some difference, but overall much more similar across mixtures. It looks like the weekend wake distributions are shifted to the right, indicating waking up later on the weekends
-
 # Falling Asleep
 
 ```{r}
-tran_df_sleep <-tran_df %>% filter(type != "Waking")
+tran_df_sleep <-tran_df %>% filter(type != "Waking") 
 
 ggplot(tran_df_sleep, aes(x = time,y = prob, color = mixture)) + 
     geom_line() + 
     labs(title = "Falling Asleep Probability", x = "Hour", y = "Probability of Falling Asleep") + 
-    facet_grid(vars(weekend),labeller = labeller(
+    facet_wrap(vars(weekend),labeller = labeller(
       weekend = c("1" = "Week", "2" = "Weekend")))+
     scale_color_viridis(discrete=TRUE,end = .95) 
 
 ggplot(tran_df_sleep, aes(x = time,y = prob, color = weekend)) + 
     geom_line() + 
     labs(title = "Falling Asleep Probability", x = "Hour", y = "Probability of Falling Asleep") + 
-    facet_grid(vars(mixture))+
+    facet_wrap(vars(mixture))+
     scale_color_viridis(discrete=TRUE,end = .95,
                         name = "Day Type", labels = c("Week","Weekend"))  
 
 
 ```
-For week falling asleep, mixtures 5 and 6 have the highest probabilities, which I think indicates falling asleep earlier. 
-
-Weekend probabilities appear flatter, indicating a lower chance meaning staying up later
 
 # Emission
 
@@ -506,17 +494,15 @@ ggplot(bi_dens_df %>% filter(MC == 1), aes(x = Activity, y = Light, z = Density)
   geom_vline(xintercept=-5.52,linetype="dashed")
 ```
 
-This plot and the one below are density plots for the parameters of the estimated bivariate emissions distribution (on Tuesday I showed density plots for simulated data using the estimated parameters so these plots will be more accurate).
+This plot and the one below are density plots for the parameters of the estimated bivariate emissions distribution.
 
 The dashed lines are the LoD for activity and light. This means that for any observations below the dashed horizontal line or to the left of the dashed vertical line we only observe the LoD. 
-
-All of the distributions are roughly similar except for the weekend emissions for clusters 1, 5, and 6 which are much more spread out and have a positive correlation.
 
 
 ```{r}
 
 ggplot(bi_dens_df %>% filter(MC == 2), aes(x = Activity, y = Light, z = Density)) +
-  geom_contour(aes(colour = after_stat(level)),bins = 200) + 
+  geom_contour(aes(colour = after_stat(level)),bins = 1000) + 
   scale_color_viridis(end = .95)+
   theme_bw() + 
   facet_grid(vars(Mixture),vars(Week),labeller = labeller(
@@ -527,42 +513,24 @@ ggplot(bi_dens_df %>% filter(MC == 2), aes(x = Activity, y = Light, z = Density)
   geom_vline(xintercept=-5.52,linetype="dashed")
 ```
 
-Barring cluster 3 there seems to be two different patterns. Clusters 1, 2, and 5 are very spread out while clusters 4, 6, and 7 have a smaller spread
-```{r, include=F}
-
-# weights_array_wake <- exp(weights_array_list[[1]]) 
-# 
-# # dimnames(weights_array_wake)[[1]] <- paste("Time",c(1:864))
-# # dimnames(weights_array_wake)[[2]] <- paste("Person",c(1:9188))
-# # dimnames(weights_array_wake)[[3]] <- paste("Mixture",c(1:mix_num))
-# 
-# weights_array_wake_df <- melt(weights_array_wake)
-# colnames(weights_array_wake_df) <- c("Time","Person","Mixture","Weight")
-# 
-# weights_array_wake_df$Weight <- as.numeric(weights_array_wake_df$Weight)
-# 
-# weights_array_wake_df <- weights_array_wake_df %>% 
-#   mutate(Act = rep(as.vector(act),mix_num))%>% 
-#   mutate(Light = rep(as.vector(light),mix_num))
-# 
-# ggplot(weights_array_wake_df %>% filter(Weight > .9 & Person <1000), aes(x=Act, y=Light)) + 
-#   geom_point(aes(color = Weight), size = .001) +
-#   scale_color_gradient(low = alpha("black", 0), high = "black",
-#                        name = "Weight") +
-#   facet_wrap(vars(Mixture))
-#   
-#   
-#   
-  
-```
-
 
 ```{r, include=F}
 
-ViterbiInd <- function(ind){
+
+Viterbi <- function(){
+  decoded_array <- array(NA, dim = c(day_length,num_of_people,mix_num))
+  for (ind in 1:num_of_people){
+    for (clust_i in 1:mix_num){
+      vit_ind_vec <- ViterbiIndHelper(ind,clust_i)
+      decoded_array[,ind,clust_i] <- vit_ind_vec
+    }
+  }
+  return(decoded_array)
+}
+
+ViterbiIndHelper <- function(ind,clust_i){
   
   
-  clust_i <- which.max(re_prob[ind,])
   tran_list_clust <- tran_list[[clust_i]]
   
   emit_act_week <- emit_act[,,,1]
@@ -743,10 +711,9 @@ lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light
 
 
 readCpp( "../cFunctions.cpp" )
-readCpp( "../Rcode/cFunctions.cpp" )
 tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,2)
 
-decoded_mat <- sapply(c(1:num_of_people), ViterbiInd)
+decoded_mat <- Viterbi()
 
 
 DecodingPlots <- function(ind,act_bool){
@@ -759,7 +726,7 @@ DecodingPlots <- function(ind,act_bool){
   time_list <- seq(as.POSIXct("2024-01-01"), as.POSIXct("2024-01-10"), by=60*15)
   time_list <- time_list[-length(time_list)]
   
-  decoded_df <- data.frame(decode = as.vector(decoded_mat[,ind]),
+  decoded_df <- data.frame(decode = as.vector(decoded_mat[,ind,mix_assignment[ind]]),
                            act = act[,ind],
                            light = light[,ind],
                            time =time_list)
@@ -812,8 +779,8 @@ DecodingPlots <- function(ind,act_bool){
 
 which(mix_assignment == 8)
 
-DecodingPlots(388,T)
-DecodingPlots(388,F)
+DecodingPlots(10,T)
+DecodingPlots(10,F)
 ```
 
 ```{r}
@@ -845,200 +812,369 @@ ReturnLongestBlockIndex <- function(vit_ind_day,forw_look){
   return(c(start[is_max],end[is_max]))
 }
 
-final_df <- data.frame()
 
-sleep_block_week_vec <- c()
-sleep_eff_week_vec <- c()
-sleep_onset_week_vec <- c()
-sleep_total_week_vec <- c()
-wake_num_week_vec <- c()
+full_data_ind <- which(colSums(!is.na(act)) > 96*6 & colSums(!is.na(light)) > 96*6)
+num_of_days <- 8
+viterbi_df <- data.frame()
 
-sleep_block_weekend_vec <- c()
-sleep_eff_weekend_vec <- c()
-sleep_onset_weekend_vec <- c()
-sleep_total_weekend_vec <- c()
-wake_num_weekend_vec <- c()
+ndf_ent <- length(full_data_ind) * mix_num * 3
 
+keep_time <- c()
+keep_array <- array(NA, dim = dim(decoded_mat))
 
-full_data_ind <- which(colSums(!is.na(act)) > 96*7 & colSums(!is.na(light)) > 96*7)
+viterbi_df <- data.frame(SleepBlock = numeric(ndf_ent),
+                         SleepEff = numeric(ndf_ent),
+                         SleepOnset = numeric(ndf_ent),
+                         SleepTotal = numeric(ndf_ent),
+                         Mixture = numeric(ndf_ent),
+                         WeekendInd = numeric(ndf_ent),
+                         Weight = numeric(ndf_ent),
+                         Ind = numeric(ndf_ent),
+                         pov_cont = numeric(ndf_ent),
+                         age_cont = numeric(ndf_ent),
+                         race = numeric(ndf_ent),
+                         bmi_cont = numeric(ndf_ent),
+                         bmi_disc = numeric(ndf_ent),
+                         gender = numeric(ndf_ent),
+                         houseFS = numeric(ndf_ent),
+                         insurance = numeric(ndf_ent),
+                         income = numeric(ndf_ent),
+                         depression = numeric(ndf_ent),
+                         home_own = numeric(ndf_ent))
+row_track <- 1
 
 for (ind in full_data_ind){
   
-  vit_ind <- decoded_mat[,ind]
-  act_ind <- act[,ind]
-  act_ind <- na.omit(act_ind[vit_ind==1])
-  light_ind <- light[,ind]
-  light_ind <- na.omit(light_ind[vit_ind==1])
-  len <- length(vit_ind)
+  demo_vars <-c(ind,
+                id$poverty[ind],
+                id$age[ind],
+                id$race[ind],
+                id$BMI[ind],
+                id$bmi_disc[ind],
+                id$gender[ind],
+                id$houseFS[ind],
+                id$insurance[ind],
+                id$income[ind],
+                id$depression[ind],
+                id$home_own[ind])
+  
   
   vcovar_vec <- vcovar_mat[,ind]
-
-  day_len <- (dim(decoded_mat)[1] %/% 96) - 1
-  sleep_block_ind_week_vec <- c()
-  sleep_eff_ind_week_vec <- c()
-  sleep_onset_ind_week_vec <- c()
-  sleep_total_ind_week_vec <- c()
   
-  sleep_block_ind_weekend_vec <- c()
-  sleep_eff_ind_weekend_vec <- c()
-  sleep_onset_ind_weekend_vec <- c()
-  sleep_total_ind_weekend_vec <- c()
-  
-  
-  wake_num <- length(unlist(gregexpr("10",paste0(vit_ind,collapse = ""))))
-  
-  
-  
-  for(day in 1:day_len){
-    start_ind <- 69 + (96*(day-1))
-    stop_ind <- 68 + (96*day)
-    vit_ind_day <- vit_ind[start_ind:stop_ind]
+  for(clust_i in 1:mix_num){
+    keep_time_ind <- c()
+    working_vit_df <- data.frame()
+    vit_ind <- decoded_mat[,ind,clust_i]
     
-    vcovar_ind_day <- vcovar_vec[start_ind:stop_ind]
-    
-    block_indices <- ReturnLongestBlockIndex(vit_ind_day,2)
-    
-    if (length(block_indices)==1){
-      sleep_block <- 0
-      sleep_eff <- 0
-      sleep_onset <- 0
-    } else {
-      block_start <- block_indices[1]
-      block_end <- block_indices[2]
+    for(day in 1:num_of_days){
       
-      sleep_block <- block_end - block_start + 1
-      sleep_eff <- sum(vit_ind_day[block_start:block_end]==1)/sleep_block
-      sleep_onset <- block_start + 48
-      sleep_total <- sum(vit_ind_day == 1)
+      start_ind <- 69 + (96*(day-1))
+      stop_ind <- 68 + (96*day)
+      vit_ind_day <- vit_ind[start_ind:stop_ind]
+      
+      vcovar_ind_day <- vcovar_vec[start_ind:stop_ind]
+      
+      block_indices <- ReturnLongestBlockIndex(vit_ind_day,2)
+      
+      if (length(block_indices)==1){
+        sleep_block <- 0
+        sleep_eff <- 0
+        sleep_onset <- 0
+        sleep_total <- sum(vit_ind_day == 1)
+        keep_time_ind <- c(keep_time_ind,c(1:96) %in% 0)
+      
+      } else {
+        block_start <- block_indices[1]
+        block_end <- block_indices[2]
+        
+        sleep_block <- block_end - block_start + 1
+        sleep_eff <- sum(vit_ind_day[block_start:block_end]==1)/sleep_block
+        sleep_onset <- block_start + 48
+        sleep_total <- sum(vit_ind_day == 1)
+        
+        keep_time_ind <- c(keep_time_ind,c(1:96) %in% c(block_start:block_end))
+      }
+    
+    # This used to be 32 not 48
+      if (sum(is.na(act[start_ind:stop_ind,ind]))>48){
+        sleep_block <- NA
+        sleep_eff <- NA
+        sleep_onset <- NA
+        sleep_total <- NA
+      }
+      
+      if (all(vcovar_ind_day== 0) ){weekend_ind <- 0
+      } else if (all(vcovar_ind_day== 1) ){weekend_ind <- 1
+      } else {print("Mismatch time and weekend")}
+      
+      working_vit_df <- rbind(working_vit_df,
+                              c(sleep_block,sleep_eff,sleep_onset,sleep_total,
+                                clust_i,weekend_ind,re_prob[ind,clust_i]))
+      
     }
+    colnames(working_vit_df) <- c("Block","Eff","Onset","Total","Mixture","WeekendInd","Weight")
     
-      
+    total_vals <- apply(working_vit_df,2,median, na.rm = T)
+    #change weekend vals to 3 for total
+    total_vals[6] <- 2
+    
+    week_vals <- apply(working_vit_df %>% filter(WeekendInd==0),2,median, na.rm = T)
+    weekend_vals <- apply(working_vit_df %>% filter(WeekendInd==1),2,median, na.rm = T)
     
     
+    viterbi_df[row_track,] <- c(total_vals,demo_vars)
+    viterbi_df[row_track+1,] <- c(week_vals,demo_vars)
+    viterbi_df[row_track+2,] <- c(weekend_vals,demo_vars)
+    row_track <- row_track + 3
     
+    keep_time_ind <- c(rep(F,68),keep_time_ind,rep(F,28))
+    keep_array[,ind,clust_i] <- keep_time_ind
     
-    if (sum(is.na(act[start_ind:stop_ind,ind]))>32){
-      sleep_block <- NA
-      sleep_eff <- NA
-      sleep_onset <- NA
-      sleep_total <- NA
-    }
-    if (all(vcovar_ind_day== 0) ){
-      
-      sleep_block_ind_week_vec <- c(sleep_block_ind_week_vec,sleep_block)
-      sleep_eff_ind_week_vec <- c(sleep_eff_ind_week_vec,sleep_eff)
-      sleep_onset_ind_week_vec <- c(sleep_onset_ind_week_vec, sleep_onset)
-      sleep_total_ind_week_vec <- c(sleep_total_ind_week_vec, sleep_total)
-      
-    } else if (all(vcovar_ind_day== 1) ){
-      
-      sleep_block_ind_weekend_vec <- c(sleep_block_ind_weekend_vec,sleep_block)
-      sleep_eff_ind_weekend_vec <- c(sleep_eff_ind_weekend_vec,sleep_eff)
-      sleep_onset_ind_weekend_vec <- c(sleep_onset_ind_weekend_vec, sleep_onset)
-      sleep_total_ind_weekend_vec <- c(sleep_total_ind_weekend_vec, sleep_total)
-      
-    } else {
-      print("Mismatch time and weekend")
-    }
-    
-  } 
   
-  sleep_block_weekend_vec <- c(sleep_block_weekend_vec,median(sleep_block_ind_weekend_vec,na.rm = T))
-  sleep_eff_weekend_vec <- c(sleep_eff_weekend_vec,median(sleep_eff_ind_weekend_vec,na.rm = T))
-  sleep_onset_weekend_vec <- c(sleep_onset_weekend_vec,median(sleep_onset_ind_weekend_vec,na.rm = T))
-  sleep_total_weekend_vec <- c(sleep_total_weekend_vec,
-                               sum(sleep_total_ind_weekend_vec,na.rm = T)/
-                                 sum(!is.na(sleep_total_ind_weekend_vec)))
-  
-  
-  sleep_block_week_vec <- c(sleep_block_week_vec,median(sleep_block_ind_week_vec,na.rm = T))
-  sleep_eff_week_vec <- c(sleep_eff_week_vec,median(sleep_eff_ind_week_vec,na.rm = T))
-  sleep_onset_week_vec <- c(sleep_onset_week_vec,median(sleep_onset_ind_week_vec,na.rm = T))
-  sleep_total_week_vec <- c(sleep_total_week_vec,
-                            sum(sleep_total_ind_week_vec,na.rm = T)/
-                              sum(!is.na(sleep_total_ind_week_vec)))
-  
-  
+  }
 }
 
 
-final_df <- data.frame(block = sleep_block_week_vec,
-                       eff = sleep_eff_week_vec,
-                       onset = sleep_onset_week_vec,
-                       totalSleep = sleep_total_week_vec,
-                       block2 = sleep_block_weekend_vec,
-                       eff2 = sleep_eff_weekend_vec,
-                       onset2 = sleep_onset_weekend_vec,
-                       totalSleep2 = sleep_total_weekend_vec,
-                       pov_cont = round(id$poverty[full_data_ind],1),
-                       age_cont = id$age[full_data_ind],
-                       race = id$race[full_data_ind],
-                       bmi_cont = round(id$BMI[full_data_ind],0),
-                       bmi_disc = id$bmi_disc[full_data_ind],
-                       gender = id$gender[full_data_ind],
-                       houseFS = id$houseFS[full_data_ind],
-                       clust = mix_assignment[full_data_ind])
+
+viterbi_df$WeekendInd <- as.factor(viterbi_df$WeekendInd)
+viterbi_df$Mixture <- as.factor(viterbi_df$Mixture)
+viterbi_df$race <- as.factor(viterbi_df$race)
+# 
+viterbi_df$gender <- as.factor(viterbi_df$gender)
+viterbi_df$houseFS <- as.factor(viterbi_df$houseFS)
+
+
+viterbi_df$insurance <- as.factor(viterbi_df$insurance)
+viterbi_df$income <- as.factor(viterbi_df$income)
+viterbi_df$home_own <- as.factor(viterbi_df$home_own)
+
+
+```
+
+```{r}
+
+ggplot(viterbi_df, aes(x=Mixture, y=SleepBlock, fill=WeekendInd,weight = Weight)) +
+  geom_boxplot(position=position_dodge(.8))
+
+
+ggplot(viterbi_df, aes(x=Mixture, y=SleepOnset, fill=WeekendInd,weight = Weight)) +
+  geom_boxplot(position=position_dodge(.8))
+
+
+ggplot(viterbi_df, aes(x=Mixture, y=SleepEff, fill=WeekendInd,weight = Weight)) +
+  geom_boxplot(position=position_dodge(.8))
+
+
+ggplot(viterbi_df, aes(x=Mixture, y=SleepTotal, fill=WeekendInd,weight = Weight)) +
+  geom_boxplot(position=position_dodge(.8))
+
+
+
+
+
+ggplot(viterbi_df, aes(x=Mixture, y=pov_cont,weight = Weight)) +
+  geom_boxplot()
+ggplot(viterbi_df, aes(x=Mixture, y=bmi_cont,weight = Weight)) +
+  geom_boxplot()
+ggplot(viterbi_df, aes(x=Mixture, y=age_cont,weight = Weight)) +
+  geom_boxplot()
+ggplot(viterbi_df, aes(x=Mixture, y=depression,weight = Weight)) +
+  geom_boxplot()
+
+
+ggplot(viterbi_df, aes(fill=gender, y=Weight, x=Mixture)) +
+    geom_bar(position="fill", stat="identity")
+
+ggplot(viterbi_df, aes(fill=houseFS, y=Weight, x=Mixture)) +
+    geom_bar(position="fill", stat="identity")
+
+ggplot(viterbi_df, aes(fill=race, y=Weight, x=Mixture)) +
+    geom_bar(position="fill", stat="identity")
+
+
+ggplot(viterbi_df, aes(fill=insurance, y=Weight, x=Mixture)) +
+    geom_bar(position="fill", stat="identity")
+
+ggplot(viterbi_df, aes(fill=income, y=Weight, x=Mixture)) +
+    geom_bar(position="fill", stat="identity")
+
+ggplot(viterbi_df, aes(fill=home_own, y=Weight, x=Mixture)) +
+    geom_bar(position="fill", stat="identity")
+
+
+```
+
+```{r}
+library(pec)
+library(systemfonts)
+library(StepReg)
+
+surv_data2 <- viterbi_df %>% filter(WeekendInd == 2)
+surv_data2 <- surv_data2 %>% mutate(time = rep(surv_data$time[full_data_ind],each = mix_num)) %>%
+  mutate(status = rep(surv_data$status[full_data_ind],each = mix_num))
+surv_data2 <- surv_data2 %>% filter(Weight > 0)
+
+surv_data2 <- surv_data2 %>% select (-c(bmi_disc))
+
+surv_data2$race <- as.factor(surv_data2$race)
+surv_data2$gender <- as.factor(surv_data2$gender)
+surv_data2$houseFS <- as.factor(surv_data2$houseFS)
+surv_data2$Mixture <- as.factor(surv_data2$Mixture)
+surv_data2$insurance <- as.factor(surv_data2$insurance)
+surv_data2$income <- as.factor(surv_data2$income)
+surv_data2$home_own <- as.factor(surv_data2$home_own)
+
+var_to_inc <- colnames(surv_data2)
+var_to_inc <- var_to_inc[!(var_to_inc %in% c("time","status","Weight"))]
+
+fullform <- as.formula(paste("Surv(time,status) ~ ",paste(var_to_inc,collapse = " + ")))
+# 
+# selected_var <- selectCox(fullform, data = surv_data2,rule = "aic")$In
+# selectform <- as.formula(paste("Surv(time,status) ~ ",paste(selected_var,collapse = " + ")))
+# coxph(selectform, data = surv_data2)
+# 
+# 
+# backward2 <- stepwise(formula = fullform,
+#                 data = surv_data2,
+#                 type = "cox",
+#                 strategy = "backward",
+#                 metric = c("AICc"))
+# 
+# 
+# bidirection <- stepwise(formula = fullform,
+#                 data = surv_data2,
+#                 type = "cox",
+#                 strategy = "bidirection",
+#                 metric = c("AICc"),
+#                 sle = .05,
+#                 sls = .05)
+# 
+# 
+# plot(bidirection)
+```
+
+```{r}
+fit <- coxph(Surv(time, status) ~ age_cont + Mixture + pov_cont + race + gender + bmi_cont + home_own + SleepEff + SleepBlock + SleepOnset+ SleepTotal,weights = Weight, data = surv_data2)
+fit
+
+fit <- coxph(Surv(time, status) ~ age_cont + Mixture + depression + pov_cont + race + gender + bmi_cont + home_own + SleepEff + SleepBlock + SleepOnset+ SleepTotal,weights = Weight, data = surv_data2)
+fit
+
+
+fit <- coxph(Surv(time, status) ~ age_cont + Mixture,weights = Weight, data = surv_data2)
+fit
+
+
+# (testfit <- cox.zph(fit))
+# plot(testfit)
+# 
+# event_ind <- which(surv_data2$status == 1)
+# nevent_ind <- which(surv_data2$status != 1)
+# 
+# mresid <- (surv_data2$status) - predict(fit, type='expected')
+# 
+# plot(mresid[event_ind])
+# plot(mresid[nevent_ind])
+```
+
+```{r}
+library(matrixStats)
+CalcBLHaz <- function(beta_age,vec, re_prob,surv_event,surv_time,age_vec){
+  n <- length(surv_event)
+  bline_vec <- numeric(n)
+  cbline_vec <- numeric(n)
+  
+  for (time_ind in 1:n){
+    risk_set <- surv_time >= surv_time[time_ind]
+    denom <- sum((re_prob[risk_set,] %*% exp(beta_vec)) * exp(beta_age * age_vec[risk_set]))
+    bline_vec[time_ind] <- surv_event[time_ind]/denom
+  }
+  
+  for(time_ind in 1:n){
+    anti_risk_set <- surv_time <= surv_time[time_ind]
+    cbline_vec[time_ind] <- sum(bline_vec[anti_risk_set])
+  }
+  
+  return(list(bline_vec,cbline_vec))
+}
+
+CalcProbRE <- function(alpha,pi_l){
+  
+  len <- dim(alpha[[1]])[1]
+  re_len <- dim(alpha[[1]])[3]
+  re_weight_vec <- numeric(re_len)
+  re_weights <- matrix(0,nrow = length(alpha),ncol = re_len)
+  
+  
+  for (ind in 1:length(alpha)){
+    for (re_ind in 1:re_len){
+      re_weights[ind,re_ind] <- logSumExp(alpha[[ind]][len,,re_ind]) + log(pi_l[ind,re_ind])
+    }
+    re_weights[ind,] <- exp(re_weights[ind,] - logSumExp(c(re_weights[ind,])))
+    
+  }
+  
+  return(re_weights)
+  
+}
+
+CollapseVitKeepArrays <- function(decoded_mat,mix_assignment){
+  flat_decoded_mat <- matrix(0,dim(decoded_mat)[1],dim(decoded_mat)[2])
+  flat_keep_mat <- matrix(0,dim(decoded_mat)[1],dim(decoded_mat)[2])
+  for (ind in 1:num_of_people){
+    flat_decoded_mat[,ind] <- decoded_mat[,ind,mix_assignment[ind]]
+    flat_keep_mat[,ind] <- keep_array[,ind,mix_assignment[ind]]
+  }
+  return(list(flat_decoded_mat,flat_keep_mat))
+}
+
+flat_array_list <- CollapseVitKeepArrays(decoded_mat,mix_assignment)
+flat_decoded_mat <- flat_array_list[[1]]
+flat_keep_mat <- flat_array_list[[2]]
+
+bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+bline_vec <- bhaz_vec[[1]]
+cbline_vec <- bhaz_vec[[2]]
+
+
+
+flat_decoded_mat_full <- flat_decoded_mat[,full_data_ind]
+flat_decoded_mat_full[!flat_keep_mat[,full_data_ind]] <- NA
+
+library(Rcpp)
+readCpp( "~/Documents/Predoc/JointHMM/cFunctions.cpp" )
   
 
-
-
-sleep_df <- final_df
-# sleep_df$pov <- as.factor(sleep_df$pov)
-# sleep_df$age <- as.factor(sleep_df$age)
+# alpha_full <- ForwardAltC(flat_decoded_mat_full,init,tran_list,beta_vec,beta_age,
+#                      surv_event[full_data_ind],bline_vec[full_data_ind],
+#                      cbline_vec[full_data_ind],age_vec[full_data_ind],vcovar_mat[,full_data_ind])
 # 
-sleep_df$clust <- as.factor(sleep_df$clust)
-sleep_df$race <- as.factor(sleep_df$race)
+# re_prob_recon <- CalcProbRE(alpha_full,pi_l[full_data_ind,])
 # 
-sleep_df$gender <- as.factor(sleep_df$gender)
-sleep_df$houseFS <- as.factor(sleep_df$houseFS)
+# tab <- table(apply(re_prob_recon,1,which.max),mix_assignment[full_data_ind])
 # 
-# sleep_df$bmi_disc <- as.factor(sleep_df$bmi_disc)
-# # sleep_df$bmi_cont <- as.factor(sleep_df$bmi_cont)
+# tab / replicate(mix_num,rowSums(tab))
 
 
-# sleep_df %>% 
-#       group_by(clust) %>%
-#       summarise_at(c("block", "onset", "eff", "totalSleep", "wakeNum"), quantile, probs = c(.1,.25,.5,.75,.9), na.rm = TRUE)
+alpha <- ForwardAltC(flat_decoded_mat,init,tran_list,beta_vec,beta_age,
+                     surv_event,bline_vec,
+                     cbline_vec,age_vec,vcovar_mat)
 
-sleep_stats_df <- data.frame(block = c(sleep_df$block,sleep_df$block2),
-                             onset = c(sleep_df$onset,sleep_df$onset2),
-                             eff = c(sleep_df$eff,sleep_df$eff2),
-                             totalSleep = c(sleep_df$totalSleep,sleep_df$totalSleep2),
-                             clust = c(sleep_df$clust,sleep_df$clust),
-                             DayType = c(rep("week",length(sleep_df$block)),
-                                         rep("weekend",length(sleep_df$block2))))
+re_prob_recon <- CalcProbRE(alpha,pi_l)
 
-ggplot(sleep_stats_df, aes(x=clust, y=block, fill=DayType)) +
-  geom_boxplot(position=position_dodge(.8))
+tab <- table(apply(re_prob_recon,1,which.max),mix_assignment)
 
-ggplot(sleep_stats_df, aes(x=clust, y=onset, fill=DayType)) +
-  geom_boxplot(position=position_dodge(.8))
+#Sensitivity
+round(tab / t(replicate(mix_num,colSums(tab))),4)
 
-ggplot(sleep_stats_df, aes(x=clust, y=eff, fill=DayType)) +
-  geom_boxplot(position=position_dodge(.8))
-
-ggplot(sleep_stats_df, aes(x=clust, y=totalSleep, fill=DayType)) +
-  geom_boxplot(position=position_dodge(.8))
+#Specificity
+round(tab / replicate(mix_num,rowSums(tab)),4)
 
 
+pred_vec <- numeric(num_of_people)
+for (i in 1:num_of_people){pred_vec[i] <- re_prob_recon[i,mix_assignment[i]]}
 
-
-
-
-ggplot(sleep_df, aes(x=clust, y=pov_cont,)) + 
-  geom_boxplot()
-ggplot(sleep_df, aes(x=clust, y=bmi_cont,)) + 
-  geom_boxplot()
-ggplot(sleep_df, aes(x=clust, y=age_cont,)) + 
-  geom_boxplot()
-
-
-ggplot(sleep_df, aes(fill=gender, y=gender, x=clust)) + 
-    geom_bar(position="fill", stat="identity")
-
-ggplot(sleep_df, aes(fill=houseFS, y=houseFS, x=clust)) + 
-    geom_bar(position="fill", stat="identity")
-
-ggplot(sleep_df, aes(fill=race, y=race, x=clust)) + 
-    geom_bar(position="fill", stat="identity")
+hist(pred_vec[mix_assignment==1])
+hist(pred_vec[mix_assignment==2])
+hist(pred_vec[mix_assignment==3])
 ```

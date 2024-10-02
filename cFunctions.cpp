@@ -405,44 +405,90 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
 
   return tran_vals_re_mat;
 }
-
-
-// // [[Rcpp::export]]
-// cube CalcTranIndHelperC(int init_state, int new_state, NumericMatrix act, List tran_list_mat, NumericVector tran_ind_vec, cube emit_act, NumericVector ind_like_vec, List alpha, List beta, double lepsilon, NumericVector act_light_binom, vec pi_l){
-//   int num_people = act.ncol();
-//   int len = act.nrow();
-//   int num_re = 1;
-//   int clust_i = 0;
-
-//   arma::cube tran_vals_re_cube( len-1, num_people, num_re );
-
-
-// 	mat tran_vals_re_mat( len-1, num_people );
-
-//     for (int ind = 0; ind < num_people; ind++) {
-      
-//       int tran_ind = tran_ind_vec(ind);
-// 	  mat tran_mat = tran_list_mat(tran_ind-1);
-	  
-
-// 	  //0,0->0 & 1,0->1 & 0,1->2 & 1,1->3
-// 	  int tran_vec_ind = init_state + (new_state * 2);
-
-// 	  arma::cube alpha_ind = alpha(ind); 
-// 	  arma::cube beta_ind = beta(ind);
-// 	  double likelihood = ind_like_vec(ind);
-	  
-
-
-
-// 	  NumericMatrix act_ind = act( Range(1,len-1) , Range(ind,ind) );
-// 	  NumericVector act_ind_m1 = act_ind.column(0); 
-	  
 	  
 // [[Rcpp::export]]
-vec Test(vec x, vec y){
+mat ForwardIndAltC(const NumericVector& decoded_ind, NumericVector init, Rcpp::List tran_list, int clust_i, vec beta_vec, double beta_age, double age, int event, double bline, double cbline, vec vcovar_vec){
   
-  vec z = x % y;
+  mat alpha( decoded_ind.length(), 2 );
+ 
+  double surv_comp;
+ 
   
-  return z;
-} 
+  if (event == 1){
+    surv_comp = log(bline) + beta_vec[clust_i]+(beta_age * age) - (cbline * exp(beta_vec[clust_i]+(beta_age * age)));
+  } else {
+    surv_comp =  -cbline * exp(beta_vec[clust_i]+(beta_age * age));
+  }
+  
+  alpha(0,0) = log(init(0)) + surv_comp;
+  alpha(0,1) = log(init(1)) + surv_comp;
+  
+  List tran_list_clust = tran_list[clust_i]; 
+  
+  double log_class_0;
+  double log_class_1;
+  
+  for (int i = 1; i < decoded_ind.length(); i++) {
+    List tran_list_vcovar = tran_list_clust[vcovar_vec(i)];
+    
+    NumericMatrix tran = tran_list_vcovar[i%96];
+    
+    
+    log_class_0 = 0;
+    log_class_1 = 0;
+    
+    if (decoded_ind(i) == 0){
+      log_class_0 = 0;
+      log_class_1 = -9999999;
+    }
+    
+    if (decoded_ind(i) == 1){
+      log_class_0 = -9999999;
+      log_class_1 = 0;
+    }
+    
+    double fp_00 = alpha(i-1,0) + log(tran(0,0)) + log_class_0;
+    
+    double fp_10 = alpha(i-1,1) + log(tran(1,0)) + log_class_0;
+    
+    double fp_01 = alpha(i-1,0) + log(tran(0,1)) + log_class_1;
+    
+    double fp_11 = alpha(i-1,1) + log(tran(1,1)) + log_class_1;
+    
+    NumericVector fp_0 = NumericVector::create(fp_00,fp_10);
+    NumericVector fp_1 = NumericVector::create(fp_01,fp_11);
+    
+    alpha(i,0) = logSumExpC(fp_0);
+    alpha(i,1) = logSumExpC(fp_1);
+  }
+  
+  return(alpha);
+}
+
+// [[Rcpp::export]]
+List ForwardAltC(const NumericMatrix& decoded_mat, NumericMatrix init, List tran_list, vec beta_vec, double beta_age, vec event_vec, vec bline_vec, vec cbline_vec, vec age_vec, mat vcovar_mat){
+  int num_people = decoded_mat.ncol();
+  int len = decoded_mat.nrow();
+  int num_re = init.nrow();
+  List alpha_list(num_people);
+  
+  
+  for (int ind = 0; ind < num_people; ind++) {
+    int age_ind = age_vec(ind);
+    
+    arma::cube Cube1(len, 2, num_re);
+    
+    vec vcovar_vec = vcovar_mat.col(ind);
+    
+    for (int clust_i = 0; clust_i < num_re; clust_i++){
+      
+      NumericVector init_vec = init.row(clust_i);
+      NumericVector decoded_ind = decoded_mat.column(ind);
+      Cube1.slice(clust_i) = ForwardIndAltC(decoded_ind, init_vec, tran_list, clust_i, beta_vec, beta_age,age_ind,event_vec[ind], bline_vec[ind], cbline_vec[ind], vcovar_vec);
+      
+    }
+    
+    alpha_list(ind) = Cube1;
+  }
+  return(alpha_list);
+}
