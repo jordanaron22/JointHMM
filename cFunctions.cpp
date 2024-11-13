@@ -17,9 +17,52 @@ double CalcCondSigC(double sig1, double bivar_corr){
 	return cond_sig1;
 }
 
+// [[Rcpp::export]]
+NumericVector vectorEqBool(NumericVector vec, double lod) {
+  NumericVector vecBool;
+  for(NumericVector::iterator i = vec.begin(); i != vec.end(); ++i) {
+    if (*i == lod) {
+      vecBool.push_back(1);
+    } else {
+      vecBool.push_back(0);
+    }
+  }
+  return vecBool;
+}
 
 // [[Rcpp::export]]
-vec logClassificationC(NumericVector act, NumericVector light, double mu_act, double sig_act, double mu_light, double sig_light, double lod_act, double lod_light, double bivar_corr, double lintegral) {
+vec logClassificationCnonTobit(NumericVector act_obs, NumericVector light_obs, double mu_act, double sig_act, double mu_light, double sig_light, 
+                               double lod_act, double lod_light, double lambda_act, double lambda_light) {
+  vec temp_act;
+  vec temp_light;
+  
+  NumericVector vec_eq_act = vectorEqBool(act_obs, lod_act);
+  NumericVector vec_eq_light = vectorEqBool(light_obs, lod_light);
+  
+  temp_act = ((log(1-lambda_act) + Rcpp::dnorm( act_obs, mu_act, sig_act, true )) * (1 - vec_eq_act)) + (log(lambda_act)*vec_eq_act);	
+  temp_light = ((log(1-lambda_light) + Rcpp::dnorm( light_obs, mu_light, sig_light, true )) * (1 - vec_eq_light)) + (log(lambda_light)*vec_eq_light);	
+  
+  LogicalVector nan_vec_act = is_na(act_obs);
+  LogicalVector nan_vec_light = is_na(light_obs);
+  int n = act_obs.length();
+  
+  for (int i = 0; i < n; i++) {
+    if(nan_vec_act[i] == true){
+      temp_act[i] = 0;
+    }
+    
+    if(nan_vec_light[i] == true){
+      temp_light[i] = 0;
+    }
+  }
+  
+  return temp_act + temp_light;
+}
+
+
+// [[Rcpp::export]]
+vec logClassificationCTobit(NumericVector act, NumericVector light, double mu_act, double sig_act, double mu_light, double sig_light, 
+                            double lod_act, double lod_light, double bivar_corr, double lintegral) {
 
 	int n = act.length();
 	vec log_dens_vec(n);
@@ -34,7 +77,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 		// Observe both act and light
 		if (nan_vec_act(i) != true && nan_vec_light(i) != true){
 			// CASE 1
-			if(act_obs >= lod_act & light_obs >= lod_light){
+			if(act_obs > lod_act & light_obs > lod_light){
 
 				double mu_light_cond = CalcCondMeanC(mu_light,sig_light,mu_act,sig_act,bivar_corr,act_obs);
 				double sig_light_cond = CalcCondSigC(sig_light,bivar_corr);
@@ -43,7 +86,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			}
 
 			//CASE 2
-			if(act_obs >= lod_act & light_obs < lod_light){
+			if(act_obs > lod_act & light_obs <= lod_light){
 
 				double mu_light_cond = CalcCondMeanC(mu_light,sig_light,mu_act,sig_act,bivar_corr,act_obs);
 				double sig_light_cond = CalcCondSigC(sig_light,bivar_corr);
@@ -52,7 +95,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			}
 
 			//CASE 3
-			if(act_obs < lod_act & light_obs >= lod_light){
+			if(act_obs <= lod_act & light_obs > lod_light){
 
 				double mu_act_cond = CalcCondMeanC(mu_act,sig_act,mu_light,sig_light,bivar_corr,light_obs);
 				double sig_act_cond = CalcCondSigC(sig_act,bivar_corr);
@@ -61,13 +104,13 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			}
 
 			//CASE 4
-			if(act_obs < lod_act & light_obs < lod_light){
+			if(act_obs <= lod_act & light_obs <= lod_light){
 				log_dens_vec(i) = lintegral;
 			}
 
 			// Light Missing
 		} else if (nan_vec_act(i) != true && nan_vec_light(i) == true){
-			if(act_obs >= lod_act){	
+			if(act_obs > lod_act){	
 				log_dens_vec(i) = R::dnorm( act_obs, mu_act, sig_act, true );
 			} else {
 				log_dens_vec(i) = R::pnorm( act_obs, mu_act, sig_act, true, true );
@@ -75,7 +118,7 @@ vec logClassificationC(NumericVector act, NumericVector light, double mu_act, do
 			
 			// Act missing
 		} else if((nan_vec_act(i) == true && nan_vec_light(i) != true)){
-			if(light_obs >= lod_light){	
+			if(light_obs > lod_light){	
 				log_dens_vec(i) = R::dnorm( light_obs, mu_light, sig_light, true );
 			} else {
 				log_dens_vec(i) = R::pnorm( light_obs, mu_light, sig_light, true, true );
@@ -94,17 +137,23 @@ return log_dens_vec;
 }
 
 // [[Rcpp::export]]
-NumericVector vectorEqBool(NumericVector vec, double lod) {
-	NumericVector vecBool;
-	for(NumericVector::iterator i = vec.begin(); i != vec.end(); ++i) {
-		if (*i == lod) {
-			vecBool.push_back(1);
-		} else {
-			vecBool.push_back(0);
-		}
+vec logClassificationC(NumericVector act, NumericVector light, double mu_act, double sig_act, double mu_light, double sig_light, 
+                       double lod_act, double lod_light, double bivar_corr, double lintegral, double lambda_act, double lambda_light,
+                       bool tobit) {
+  
+  vec log_class;
+  
+  if (tobit){
+    log_class = logClassificationCTobit(act, light, mu_act, sig_act, mu_light, sig_light, 
+                                        lod_act, lod_light, bivar_corr, lintegral);
+  } else {
+    log_class = logClassificationCnonTobit(act, light, mu_act, sig_act, mu_light, sig_light, 
+                                           lod_act, lod_light, lambda_act, lambda_light);
   }
-  return vecBool;
+  return log_class;
 }
+
+
 
 
 /* This is from the seqHMM github*/
@@ -134,7 +183,11 @@ double logSumExpC(const arma::vec& x) {
 }
 
 // [[Rcpp::export]]
-mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, cube emit_act_week, cube emit_light_week,  cube emit_act_weekend, cube emit_light_weekend, int clust_i, double lod_act, double lod_light, cube corr_vec, vec beta_vec, double beta_age, double age, int event, double bline, double cbline, cube lintegral_mat, double log_sweight, vec vcovar_vec){
+mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, 
+                cube emit_act_week, cube emit_light_week,  cube emit_act_weekend, cube emit_light_weekend, 
+                int clust_i, double lod_act, double lod_light, cube corr_vec, vec beta_vec, double beta_age, 
+                double age, int event, double bline, double cbline, cube lintegral_mat, double log_sweight, vec vcovar_vec,
+                cube lambda_act_mat, cube lambda_light_mat, bool tobit, bool incl_surv){
 
 	mat alpha( act_ind.length(), 2 );
   
@@ -143,41 +196,47 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
                                              emit_act_week(0,1,clust_i), 
                                              emit_light_week(0,0,clust_i),
                                              emit_light_week(0,1,clust_i), 
-                                             lod_act, lod_light, corr_vec(clust_i,0,0), lintegral_mat(clust_i,0,0));
+                                             lod_act, lod_light, corr_vec(clust_i,0,0), lintegral_mat(clust_i,0,0),
+                                             lambda_act_mat(clust_i,0,0),lambda_light_mat(clust_i,0,0),tobit);
   
   vec log_class_1_week = logClassificationC( act_ind, light_ind, 
                                              emit_act_week(1,0,clust_i),
                                              emit_act_week(1,1,clust_i),
                                              emit_light_week(1,0,clust_i),
                                              emit_light_week(1,1,clust_i),
-                                             lod_act, lod_light, corr_vec(clust_i,1,0), lintegral_mat(clust_i,1,0));
+                                             lod_act, lod_light, corr_vec(clust_i,1,0), lintegral_mat(clust_i,1,0),
+                                             lambda_act_mat(clust_i,1,0),lambda_light_mat(clust_i,1,0),tobit);
   
   vec log_class_0_weekend = logClassificationC( act_ind, light_ind, 
                                                 emit_act_weekend(0,0,clust_i), 
                                                 emit_act_weekend(0,1,clust_i), 
                                                 emit_light_weekend(0,0,clust_i),
                                                 emit_light_weekend(0,1,clust_i), 
-                                                lod_act, lod_light, corr_vec(clust_i,0,1), lintegral_mat(clust_i,0,1));
+                                                lod_act, lod_light, corr_vec(clust_i,0,1), lintegral_mat(clust_i,0,1),
+                                                lambda_act_mat(clust_i,0,1),lambda_light_mat(clust_i,0,1),tobit);
   
   vec log_class_1_weekend = logClassificationC( act_ind, light_ind, 
                                                 emit_act_weekend(1,0,clust_i),
                                                 emit_act_weekend(1,1,clust_i),
                                                 emit_light_weekend(1,0,clust_i),
                                                 emit_light_weekend(1,1,clust_i),
-                                                lod_act, lod_light, corr_vec(clust_i,1,1), lintegral_mat(clust_i,1,1));
+                                                lod_act, lod_light, corr_vec(clust_i,1,1), lintegral_mat(clust_i,1,1),
+                                                lambda_act_mat(clust_i,1,1),lambda_light_mat(clust_i,1,1),tobit);
 	
 	
 	vec log_class_0 = (log_class_0_week % (1-vcovar_vec)) + (log_class_0_weekend % vcovar_vec); 
 	vec log_class_1 = (log_class_1_week % (1-vcovar_vec)) + (log_class_1_weekend % vcovar_vec);
 
-	double surv_comp;
+	double surv_comp = 0.0;
 
-	
-	if (event == 1){
-	  surv_comp = log(bline) + beta_vec[clust_i]+(beta_age * age) - (cbline * exp(beta_vec[clust_i]+(beta_age * age)));
-	} else {
-	  surv_comp =  -cbline * exp(beta_vec[clust_i]+(beta_age * age));
+	if (incl_surv){
+	  if (event == 1){
+	    surv_comp = log(bline) + beta_vec[clust_i]+(beta_age * age) - (cbline * exp(beta_vec[clust_i]+(beta_age * age)));
+	  } else {
+	    surv_comp =  -cbline * exp(beta_vec[clust_i]+(beta_age * age));
+	  }
 	}
+  	
 	
 	
 
@@ -212,7 +271,10 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 }
 
 // [[Rcpp::export]]
-mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Rcpp::List tran_list, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend,int clust_i, double lod_act, double lod_light, cube corr_vec, cube lintegral_mat, vec vcovar_vec){
+mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Rcpp::List tran_list, 
+                 cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend,
+                 int clust_i, double lod_act, double lod_light, cube corr_vec, cube lintegral_mat, vec vcovar_vec,
+                 cube lambda_act_mat, cube lambda_light_mat, bool tobit){
   
   int n = act_ind.length(); 
   mat beta( n, 2 );
@@ -222,28 +284,32 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
                                              emit_act_week(0,1,clust_i), 
                                              emit_light_week(0,0,clust_i),
                                              emit_light_week(0,1,clust_i), 
-                                             lod_act, lod_light, corr_vec(clust_i,0,0), lintegral_mat(clust_i,0,0));
+                                             lod_act, lod_light, corr_vec(clust_i,0,0), lintegral_mat(clust_i,0,0),
+                                             lambda_act_mat(clust_i,0,0),lambda_light_mat(clust_i,0,0),tobit);
   
   vec log_class_1_week = logClassificationC( act_ind, light_ind, 
                                              emit_act_week(1,0,clust_i),
                                              emit_act_week(1,1,clust_i),
                                              emit_light_week(1,0,clust_i),
                                              emit_light_week(1,1,clust_i),
-                                             lod_act, lod_light, corr_vec(clust_i,1,0), lintegral_mat(clust_i,1,0));
+                                             lod_act, lod_light, corr_vec(clust_i,1,0), lintegral_mat(clust_i,1,0),
+                                             lambda_act_mat(clust_i,1,0),lambda_light_mat(clust_i,1,0),tobit);
   
   vec log_class_0_weekend = logClassificationC( act_ind, light_ind, 
                                                 emit_act_weekend(0,0,clust_i), 
                                                 emit_act_weekend(0,1,clust_i), 
                                                 emit_light_weekend(0,0,clust_i),
                                                 emit_light_weekend(0,1,clust_i), 
-                                                lod_act, lod_light, corr_vec(clust_i,0,1), lintegral_mat(clust_i,0,1));
+                                                lod_act, lod_light, corr_vec(clust_i,0,1), lintegral_mat(clust_i,0,1),
+                                                lambda_act_mat(clust_i,0,1),lambda_light_mat(clust_i,0,1),tobit);
   
   vec log_class_1_weekend = logClassificationC( act_ind, light_ind, 
                                                 emit_act_weekend(1,0,clust_i),
                                                 emit_act_weekend(1,1,clust_i),
                                                 emit_light_weekend(1,0,clust_i),
                                                 emit_light_weekend(1,1,clust_i),
-                                                lod_act, lod_light, corr_vec(clust_i,1,1), lintegral_mat(clust_i,1,1));
+                                                lod_act, lod_light, corr_vec(clust_i,1,1), lintegral_mat(clust_i,1,1),
+                                                lambda_act_mat(clust_i,1,1),lambda_light_mat(clust_i,1,1),tobit);
 	
 	
 	vec log_class_0 = (log_class_0_week % (1-vcovar_vec)) + (log_class_0_weekend % vcovar_vec); 
@@ -280,7 +346,12 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
 }
 
 // [[Rcpp::export]]
-List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, double lod_act, double lod_light, cube corr_mat, vec beta_vec, double beta_age, vec event_vec, vec bline_vec, vec cbline_vec, cube lintegral_mat, NumericVector log_sweights_vec, vec age_vec, mat vcovar_mat){
+List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, 
+              cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, 
+              double lod_act, double lod_light, cube corr_mat, vec beta_vec, double beta_age, 
+              vec event_vec, vec bline_vec, vec cbline_vec, cube lintegral_mat, NumericVector log_sweights_vec, 
+              vec age_vec, mat vcovar_mat,cube lambda_act_mat, cube lambda_light_mat, bool tobit, bool incl_surv){ 
+  
 	int num_people = act.ncol();
 	int len = act.nrow();
 	int num_re = emit_act_week.n_slices;
@@ -299,7 +370,10 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 		for (int clust_i = 0; clust_i < num_re; clust_i++){
 			NumericVector init_vec = init.row(clust_i);
 
-			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act_week, emit_light_week, emit_act_weekend, emit_light_weekend,clust_i, lod_act, lod_light, corr_mat, beta_vec, beta_age,age_ind,event_vec[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, log_sweight, vcovar_vec);
+			Cube1.slice(clust_i) = ForwardIndC(act_ind, light_ind, init_vec, tran_list, emit_act_week, emit_light_week, 
+               emit_act_weekend, emit_light_weekend,clust_i, lod_act, lod_light, corr_mat, 
+               beta_vec, beta_age,age_ind,event_vec[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, 
+               log_sweight, vcovar_vec,lambda_act_mat, lambda_light_mat, tobit, incl_surv);
 
 		}
 
@@ -309,7 +383,10 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 }
 
 // [[Rcpp::export]]
-List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, double lod_act, double lod_light, cube corr_mat, cube lintegral_mat, mat vcovar_mat){
+List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, 
+               cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, 
+               double lod_act, double lod_light, cube corr_mat, cube lintegral_mat, mat vcovar_mat,
+               cube lambda_act_mat, cube lambda_light_mat, bool tobit){
 
 	int num_people = act.ncol();
 	int len = act.nrow();
@@ -326,7 +403,9 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 		
 		for (int clust_i = 0; clust_i < num_re; clust_i++){
 
-			Cube1.slice(clust_i) = BackwardIndC(act_ind, light_ind, tran_list, emit_act_week, emit_light_week, emit_act_weekend, emit_light_weekend, clust_i, lod_act, lod_light, corr_mat, lintegral_mat, vcovar_vec);
+			Cube1.slice(clust_i) = BackwardIndC(act_ind, light_ind, tran_list, emit_act_week, emit_light_week, emit_act_weekend, 
+               emit_light_weekend, clust_i, lod_act, lod_light, corr_mat, lintegral_mat, vcovar_vec,
+               lambda_act_mat, lambda_light_mat, tobit);
 
 		}
 
@@ -337,7 +416,11 @@ List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_l
 
 
 // [[Rcpp::export]]
-mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, cube corr_mat, cube lintegral_mat, mat pi_l, int clust_i, mat vcovar_mat){
+mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMatrix light, List tran_list_mat, 
+                    cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, 
+                    NumericVector ind_like_vec, List alpha, List beta, double lod_act, double lod_light, 
+                    cube corr_mat, cube lintegral_mat, mat pi_l, int clust_i, mat vcovar_mat,
+                    cube lambda_act_mat, cube lambda_light_mat, bool tobit){
   int num_people = act.ncol();
   int len = act.nrow();
   
@@ -380,14 +463,16 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
                                              emit_act_week(new_state,1,clust_i), 
                                              emit_light_week(new_state,0,clust_i), 
                                              emit_light_week(new_state,1,clust_i),
-                                             lod_act, lod_light, corr_mat(clust_i,new_state,0), lintegral_mat(clust_i,new_state,0));    
+                                             lod_act, lod_light, corr_mat(clust_i,new_state,0), lintegral_mat(clust_i,new_state,0),
+                                             lambda_act_mat(clust_i,new_state,0),lambda_light_mat(clust_i,new_state,0),tobit);
     
     vec class_vec_weekend = logClassificationC( act_ind, light_ind, 
                                                 emit_act_weekend(new_state,0,clust_i), 
                                                 emit_act_weekend(new_state,1,clust_i), 
                                                 emit_light_weekend(new_state,0,clust_i), 
                                                 emit_light_weekend(new_state,1,clust_i),
-                                                lod_act, lod_light, corr_mat(clust_i,new_state,1), lintegral_mat(clust_i,new_state,1));
+                                                lod_act, lod_light, corr_mat(clust_i,new_state,1), lintegral_mat(clust_i,new_state,1),
+                                                lambda_act_mat(clust_i,new_state,1),lambda_light_mat(clust_i,new_state,1),tobit);
     
     vec class_vec = (class_vec_week % (1-vcovar_vec)) + (class_vec_weekend % vcovar_vec); 
     
@@ -405,7 +490,8 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
 
   return tran_vals_re_mat;
 }
-	  
+	 
+/* 
 // [[Rcpp::export]]
 mat ForwardIndAltC(const NumericVector& decoded_ind, NumericVector init, Rcpp::List tran_list, int clust_i, vec beta_vec, double beta_age, double age, int event, double bline, double cbline, vec vcovar_vec){
   
@@ -492,3 +578,7 @@ List ForwardAltC(const NumericMatrix& decoded_mat, NumericMatrix init, List tran
   }
   return(alpha_list);
 }
+*/
+
+
+
