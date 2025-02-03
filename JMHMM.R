@@ -13,16 +13,24 @@ library(Hmisc)
 library(survex)
 library(tidyverse)
 
-beta_bool <- 1
+beta_bool <- 0
 real_data <- 0
+# sim_size <- 1
 randomize_init <- 1
 set_seed <- 1
 tobit <- 1
 leave_out <- 0
-incl_surv <- 1
+# incl_surv <- 2
 incl_light <- 1
+incl_act <- 1
 load_data <- 1
 check_tran <- 0
+wake_sleep <- 0
+weekend_only <- 0
+misspecification <- 0
+save_space <- 0
+single_day <- 0
+
 
 epsilon <- 1e-3
 lepsilon <- log(epsilon)
@@ -32,7 +40,7 @@ vcovar_num <- 2
 sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
 print(paste("Seed",sim_num))
 
-if (is.na(sim_num)){sim_num <- 98}
+if (is.na(sim_num)){sim_num <- 6}
 if (set_seed){set.seed(sim_num)}
 
 print("Command line arguments:")
@@ -42,31 +50,51 @@ command_args <- as.character(commandArgs(TRUE)[1])
 command_args <- as.numeric(unlist(strsplit(command_args, "")))
 
 mix_num <- command_args[1]
+# mix_num <- as.numeric(paste0(1,mix_num))
 print(paste("mixnum",mix_num))
 
-real_data <- command_args[2]
-print(paste("Real Data",real_data))
+incl_surv <- command_args[2]
+print(paste("Include Surv",incl_surv))
+
+# real_data <- command_args[3]
+# print(paste("Real Data",real_data))
+
+sim_size <- command_args[3]
+print(paste("Single day",sim_size))
 # 
-incl_surv <- command_args[3]
-print(paste("Include Survival",incl_surv))
-# 
-load_data <- command_args[4]
-print(paste("Load Data",load_data))
-# 
-print(paste("Sim Seed:",sim_num,"HMM Num:",mix_num))
+# misspecification <- command_args[2]
+# print(paste("misspecification",misspecification))
+# # 
+# incl_light <- command_args[3]
+# print(paste("Include Light",incl_light))
+#
+# wake_sleep <- command_args[1]
+# print(paste("Cycle Only?",wake_sleep))
+#
+
 if(is.na(mix_num)){mix_num <- 4}
-if(is.na(real_data)){real_data <- 0}
-if(is.na(incl_surv)){incl_surv <- 1}
-if(is.na(load_data)){load_data <- 0}
+if(is.na(incl_surv)){incl_surv <- 2}
+# if(is.na(real_data)){real_data <- 1}
+if(is.na(sim_size)){sim_size <- 0}
+# if(is.na(misspecification)){misspecification <- 0}
+# if(is.na(load_data)){load_data <- 0}
+
+print(paste("Sim Seed:",sim_num,"HMM Num:",mix_num))
 
 model_name <- "JMHMM"
-if (!real_data){model_name <- paste0(model_name,"Sim")}
+if (!real_data){model_name <- paste0(model_name,"SimSize",sim_size)}
 if (!tobit){model_name <- paste0(model_name,"NonTob")}
 if (leave_out){model_name <- paste0(model_name,"LeaveOut")}
-if (!incl_surv){model_name <- paste0(model_name,"NoSurv")}
+if (incl_surv==0){model_name <- paste0(model_name,"NoSurv")}
+if (incl_surv==1){model_name <- paste0(model_name,"HalfSurv")}
 if (!incl_light){model_name <- paste0(model_name,"NoLight")}
+if (!incl_act){model_name <- paste0(model_name,"NoAct")}
+if (wake_sleep){model_name <- paste0(model_name,"OnlyCycle")}
+if (weekend_only){model_name <- paste0(model_name,"WeekendOnly")}
+if (misspecification){model_name <- paste0(model_name,"Misspecified",misspecification)}
+if (single_day){model_name <- paste0(model_name,"SingleDay",single_day)}
 
-model_name <- paste0(model_name,mix_num,"Seed",sim_num,".rda")
+model_name <- paste0(model_name,"Mix",mix_num,"Seed",sim_num,".rda")
 print(model_name)
 ################## Functions ##################
 readCpp <- function(path) {
@@ -289,7 +317,9 @@ GenTranColVecList <- function(params_tran_array,mix_num,vcovar_num){
   
   for (mixture_ind in 1:mix_num){
     for (vcovar_ind in 1:vcovar_num){
-      vcovar_tran_list[[vcovar_ind]] <- Params2TranVectorT(mixture_ind,len,params_tran_array[,,vcovar_ind])
+      params_tran <- params_tran_array[,,vcovar_ind]
+      if (mix_num == 1) {params_tran <- matrix(params_tran,nrow = 1)}
+      vcovar_tran_list[[vcovar_ind]] <- Params2TranVectorT(mixture_ind,len,params_tran)
       
     }
     mixture_vcovar_tran_list[[mixture_ind]] <- vcovar_tran_list
@@ -307,8 +337,10 @@ GenTranList <- function(params_tran_array,time_vec,mix_num,vcovar_num){
   for (mixture_ind in 1:mix_num){
     for (vcovar_ind in 1:vcovar_num){
       
+      params_tran <- params_tran_array[,,vcovar_ind]
+      if (mix_num == 1) {params_tran <- matrix(params_tran,nrow = 1)}
       vcovar_tran_list[[vcovar_ind]] <- TranByTimeVec(re_ind = mixture_ind,
-                                                      params_tran = params_tran_array[,,vcovar_ind],
+                                                      params_tran = params_tran,
                                                       time_vec = time_vec)
       
     }
@@ -321,7 +353,9 @@ GenTranList <- function(params_tran_array,time_vec,mix_num,vcovar_num){
 
 SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,
                         emit_act,emit_light,corr_mat,
-                        lod_act,lod_light, nu_mat,beta_vec_true,beta_age_true,missing_perc,lambda_act_mat,lambda_light_mat){
+                        lod_act,lod_light, nu_mat,beta_vec_true,beta_age_true,
+                        missing_perc,lambda_act_mat,lambda_light_mat,
+                        misspecification){
   
   mix_num <- dim(emit_act)[3]
   
@@ -332,10 +366,33 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,
   nu_covar_mat <- cbind(age_vec/10,(age_vec/10)^2,statact_vec,statact_vec^2)
   
   pi_l_true <- CalcPi(nu_mat,nu_covar_mat)
-  mixture_vec <- rMultinom(pi_l_true,1)
   
-  vcovar_vec <- c(rep(0,48),rep(1,96),rep(0,48))
-  vcovar_vec <- rep(vcovar_vec,day_length/192)
+  if (misspecification == 1){
+    pi_l_true <- cbind(pi_l_true[,1],pi_l_true[,1])
+    pi_l_true[,1] <- 1
+    pi_l_true[,2] <- 0
+  } else if (misspecification > 1){
+    pi_l_true <- pi_l_true[,1:misspecification]
+    pi_l_true <- pi_l_true/ rowSums(pi_l_true)
+  }
+  if (dim(pi_l_true)[2] > 1){
+    mixture_vec <- rMultinom(pi_l_true,1)
+  } else {
+    mixture_vec <- matrix(1,nrow = dim(pi_l_true)[1],ncol = 1)
+  }
+  
+  
+  if (day_length == 192){
+    vcovar_vec <- c(rep(0,48),rep(1,96),rep(0,48))
+  } else if (day_length == 384){
+    vcovar_vec <- c(rep(0,96*2),rep(1,96*2))
+  } else if (day_length == 672){
+    vcovar_vec <- c(rep(0,96*5),rep(1,96*2))
+  } else {
+    vcovar_vec <- c(rep(0,48),rep(1,96),rep(0,48))
+    vcovar_vec <- rep(vcovar_vec,day_length/192)
+  }
+  
   vcovar_mat <- replicate(num_of_people, vcovar_vec)
 
   tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,vcovar_num)
@@ -439,7 +496,12 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,
   # }
   
   surv_list <- SimSurvival(mixture_vec,beta_vec_true,beta_age_true,age_vec)
-  cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec + as.factor(mixture_vec))
+  if (misspecification == 1 | all(mixture_vec== 1) ){
+    cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec)
+  } else {
+    cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec + as.factor(mixture_vec))
+  }
+  
   beta_vec_long_emp <- as.vector(as.vector(cox_mod$coefficients))
   
   
@@ -569,13 +631,18 @@ CalcTranHelper <- function(act, light, tran_list_mat, emit_act, emit_light,
   
   tran_vals_re_array <- array(NA,c(2,2,len - 1,num_people,num_re))
   
+  emit_act_week <- array(emit_act[,,,1],dim = c(2,2,mix_num))
+  emit_light_week <- array(emit_light[,,,1],dim = c(2,2,mix_num))
+  emit_act_weekend <- array(emit_act[,,,2],dim = c(2,2,mix_num))
+  emit_light_weekend <- array(emit_light[,,,2],dim = c(2,2,mix_num))
+  
   for(init_state in 1:2){
     for(new_state in 1:2){
       for (clust_i in 1:num_re){
         tran_vals_re_array[init_state,new_state,,,clust_i] <- CalcTranHelperC(init_state = init_state-1, new_state = new_state-1,act = act,
                                                           light = light,tran_list_mat = tran_list_mat,
-                                                          emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-                                                          emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
+                                                          emit_act_week = emit_act_week,emit_light_week = emit_light_week,
+                                                          emit_act_weekend = emit_act_weekend,emit_light_weekend = emit_light_weekend,
                                                           ind_like_vec = ind_like_vec,
                                                           alpha = alpha,beta = beta,lod_act = lod_act,lod_light = lod_light,
                                                           corr_mat = corr_mat,lintegral_mat = lintegral_mat,pi_l = pi_l,
@@ -670,6 +737,7 @@ CalcTranCHelper <- function(alpha,beta,act,light,params_tran_array,emit_act,emit
     for (new_state in 1:2){
       
       tran_vals <- tran_vals_re_array[init_state,new_state,,,]
+      if (mix_num  == 1){dim(tran_vals)[3] <- 1}
       
       for (ind in 1:length(alpha)){
         
@@ -777,9 +845,9 @@ LM <- function(grad_array,hess_array,params_tran_array,check_tran,likelihood,pi_
                      lod_act = lod_act, lod_light = lod_light, 
                      corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
                      event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
-                     lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
+                     lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
                      age_vec = age_vec, vcovar_mat = vcovar_mat,
-                     lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit,incl_surv = incl_surv)
+                     lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit,incl_surv = incl_surv*beta_bool)
     new_like <- CalcLikelihood(alpha,pi_l)
     
     if (new_like < likelihood){
@@ -885,7 +953,7 @@ CalcLightMean <- function(mc_state,vcovar_ind,act,light,emit_act,emit_light,corr
 
 CalcLightSig <- function(mc_state,vcovar_ind,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array,re_ind,vcovar_mat){
   
-  mu_act <- optimize(EmitLogLike, c(0.01,15), act = act, light = light, 
+  mu_act <- optimize(EmitLogLike, c(0.01,20), act = act, light = light, 
                      mu_act = emit_act[mc_state,1,re_ind,vcovar_ind],
                      sig_act = emit_act[mc_state,2,re_ind,vcovar_ind],
                      mu_light = emit_light[mc_state,1,re_ind,vcovar_ind], 
@@ -1018,26 +1086,20 @@ CalcBIC <- function(new_likelihood,mix_num,act,light){
   return(bic)
 }
 
-CalcBLHaz <- function(beta_age,vec, re_prob,surv_event,surv_time,age_vec){
+CalcBLHaz <- function(beta_age,beta_vec, re_prob,surv_event,surv_time,age_vec){
   n <- length(surv_event)
   bline_vec <- numeric(n)
   cbline_vec <- numeric(n)
   
   for (time_ind in 1:n){
     risk_set <- surv_time >= surv_time[time_ind]
-    if (incl_surv){
+    
+    if (dim(re_prob)[2] != 1){
       denom <- sum((re_prob[risk_set,] %*% exp(beta_vec)) * exp(beta_age * age_vec[risk_set]))
     } else {
-      if (sum(risk_set) == 1){
-        mix_assignment_pl <- which.max(re_prob[risk_set,])
-      } else {
-        mix_assignment_pl <- apply(re_prob[risk_set,],1,which.max)
-      }
-      
-      denom <- sum(exp(beta_vec[mix_assignment_pl]) * exp(beta_age * age_vec[risk_set]))
+      denom <- sum(exp(beta_age * age_vec[risk_set]))
     }
-    
-    
+      
     if (denom > .Machine$double.xmax){denom <- .Machine$double.xmax}
     bline_vec[time_ind] <- surv_event[time_ind]/denom
   }
@@ -1090,61 +1152,58 @@ CalcBetaHelper <- function(beta_vec_long){
   return(beta_vec_long)
 }
 
-CalcBetaManual <- function(beta_vec_long){
-  
-  
-  
+CalcBetaManual <- function(beta_vec_long,stop_crit){
   l2norm <- 2
-  while (l2norm > 1e-0){
-    
+  while (l2norm > stop_crit){
+
     old_slike <- SurvLike(beta_vec_long)
     slike_diff <- -1
-    
+
     beta_age <- beta_vec_long[1]
     beta_vec <- beta_vec_long[-1]
     beta_vec <- c(0,beta_vec)
-    
+
     grad <- numeric(mix_num)
     hess <- matrix(0,mix_num,mix_num)
-    
+
     for (ind in which(surv_event == 1)){
-      
+
       risk_set <- surv_time >= surv_time[ind]
       ageadj_risk <- exp(beta_age*age_vec[risk_set]) %x% t(exp(beta_vec))
-      
+
       num0 <- sum(re_prob[risk_set,] * ageadj_risk * age_vec[risk_set] %x% t(numeric(mix_num)+1))
       num02 <- sum(re_prob[risk_set,] * ageadj_risk * age_vec[risk_set]^2 %x% t(numeric(mix_num)+1))
-      
+
       for (beta_ind in 1:mix_num){
-        
+
         denom <- sum(re_prob[risk_set,] * ageadj_risk)
         num_cross <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(beta_age*age_vec[risk_set])* age_vec[risk_set])
-        
-        
+
+
         if (beta_ind ==1){
-          
-          
+
+
           grad[beta_ind] <- grad[beta_ind] + (age_vec[ind] - num0/denom)
           # hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (denom*num02-num0^2)/denom^2
           hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (num02/denom) - (num0/denom)^2
         } else {
-          
+
           num <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(beta_age*age_vec[risk_set]))
-          
+
           grad[beta_ind] <- grad[beta_ind] + (re_prob[ind,beta_ind] - num/denom)
           # hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (-denom*num+num^2)/denom^2
           hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (num/denom) - (num/denom)^2
-          
+
           hess[1,beta_ind] <- hess[1,beta_ind] + (denom*num_cross - num*num0)/denom^2
           hess[beta_ind,1] <- hess[beta_ind,1] + (denom*num_cross - num*num0)/denom^2
         }
-        
-        
+
+
       }
-      
-      
+
+
     }
-  
+
     step_size <- .01
     step_mat <- matrix(0,dim(hess)[1],dim(hess)[2])
     nr_fact <- numeric(length(grad))-1
@@ -1157,54 +1216,49 @@ CalcBetaManual <- function(beta_vec_long){
       new_slike <- SurvLike(beta_vec_long_new)
       slike_diff <- old_slike - new_slike
     }
-    
+
     l2norm <- sum(sqrt((beta_vec_long_new - beta_vec_long)^2))
-    
-    
-    
+
+
+
     beta_vec_long <- beta_vec_long_new
     # print(slike_diff)
- 
+
     # beta_vec_long[beta_vec_long>200] <- 200
-    
+
   }
-  return(beta_vec_long)
+  return(list(beta_vec_long,hess))
 }
 
-CalcBeta <- function(beta_vec_long, incl_surv){
+CalcBeta <- function(beta_vec_long, incl_surv, stop_crit = 1){
   
-  if (incl_surv){
-    return(CalcBetaManual(beta_vec_long))
-    
-    # surv_data <- data.frame(time = rep(surv_time,each = mix_num),
-    #                         status = rep(surv_event, each = mix_num),
-    #                         group = rep(c(1:mix_num),length(surv_time)),
-    #                         age = rep(age_vec,each = mix_num),
-    #                         weights = as.vector(t(re_prob)))
-    # 
-    # surv_data$group <- factor(surv_data$group,levels = c(1:mix_num))
-    # 
-    # surv_params <- coxph(Surv(time, status) ~ group + age, data = surv_data %>% filter(weights>0),weights = weights)$coefficients 
-    # 
-    # beta_vec_long <- c(surv_params[length(surv_params)],surv_params[-length(surv_params)])
-    # beta_vec_long[is.na(beta_vec_long)] <- 0
-    # return(beta_vec_long)
-    
-  } else {
-    mix_assignment <- apply(re_prob,1,which.max)
-    
-    surv_data <- data.frame(time = surv_time,
-                            status = surv_event,
-                            group = mix_assignment,
-                            age = age_vec)
-    surv_data$group <- factor(surv_data$group,levels = c(1:mix_num))
-    
-    surv_params <- coxph(Surv(time, status) ~ group + age, data = surv_data)$coefficients 
-    
-    beta_vec_long <- c(surv_params[length(surv_params)],surv_params[-length(surv_params)])
-    beta_vec_long[is.na(beta_vec_long)] <- 0
-    return(beta_vec_long)
+  if (incl_surv!=0){
+    beta_vec_long_hess <- CalcBetaManual(beta_vec_long, stop_crit)
+    beta_vec_long <- beta_vec_long_hess[[1]]
+    hess <- beta_vec_long_hess[[2]]
+    se <- sqrt(diag(solve(hess)))
+    return(list(beta_vec_long,se))
   }
+  
+  surv_data <- data.frame(time = surv_time,
+                            status = surv_event,
+                            age = age_vec)
+    
+  surv_data <- cbind(surv_data,re_prob)
+  colnames(surv_data)[4] <- "toRem"
+  
+  # fit <- coxph(Surv(time, status) ~ surv_data[,6:8] + age, data = surv_data)
+  fit <- coxph(Surv(time, status) ~ .  - toRem, data = surv_data)
+  surv_params <- fit$coefficients 
+  se <- sqrt(diag(fit$var))
+  
+  # beta_vec_long <- c(surv_params[length(surv_params)],surv_params[-length(surv_params)])
+  # beta_vec_long[is.na(beta_vec_long)] <- 0
+  # se <- c(se[mix_num],se[-mix_num])
+  beta_vec_long <- surv_params
+  
+  return(list(beta_vec_long,se))
+
   
 }
 
@@ -1216,6 +1270,27 @@ Vec2Mat <- function(vect){
   }
   return (mat)
 }
+
+FirstDay2SingleDay <- function(first_day,target_day){
+  
+  day_to_keep_vec <- numeric(864)
+  
+  if (first_day == target_day){
+    day_to_keep_vec[673:768] <- 1
+  } else {
+    if (first_day > target_day){
+      day_ind <- 7 - (first_day-target_day)
+    } else {
+      day_ind <- target_day - first_day
+    }
+    first_day_ind <- (96 * (day_ind)) + 1
+    last_day_ind <- first_day_ind + 95
+    day_to_keep_vec[first_day_ind:last_day_ind] <- 1
+  }
+    
+  return(day_to_keep_vec)
+}
+
 
 FirstDay2WeekInd <- function(first_day){
   weekday <- numeric(96)
@@ -1242,7 +1317,7 @@ FirstDay2WeekInd <- function(first_day){
   return(covar_vec)
 }
 
-ParamsArray2DF <- function(params_tran_array){
+ParamsArray2DF <- function(params_tran_array, misspecification = 0){
   
   tran_df <- data.frame(prob = c(),
                         type = c(),
@@ -1250,9 +1325,15 @@ ParamsArray2DF <- function(params_tran_array){
                         age = c(),
                         weekend = c(),
                         mixture = c())
-  for (re_ind in 1:mix_num){
+  
+  
+  for (re_ind in 1:dim(params_tran_array)[1]){
     for (vcovar_ind in 1:vcovar_num){
-      tran_mat <- Params2TranVectorTresid(re_ind,96,params_tran_array[,,vcovar_ind])
+      
+      params_tran <- params_tran_array[,,vcovar_ind]
+      if (mix_num == 1 | misspecification == 1) {params_tran <- matrix(params_tran,nrow = 1)}
+      
+      tran_mat <- Params2TranVectorTresid(re_ind,96,params_tran)
       tosleep <- tran_mat[,3]
       towake <- tran_mat[,2]
       
@@ -1269,7 +1350,6 @@ ParamsArray2DF <- function(params_tran_array){
 }
 
 CalcPiHelper <- function(nu_mat,nu_covar_vec){
-  
   pi_ind <- exp(colSums(nu_mat * nu_covar_vec))/sum(exp(colSums(nu_mat * nu_covar_vec)))
   if (any(is.na(pi_ind))){
     pi_ind[is.na(pi_ind)] <- 1
@@ -1280,8 +1360,8 @@ CalcPiHelper <- function(nu_mat,nu_covar_vec){
 
 CalcPi <- function(nu_mat,nu_covar_mat){
   
-  pi_l_new <- matrix(NA,num_of_people,mix_num)
-  for (ind in 1:num_of_people){
+  pi_l_new <- matrix(NA,dim(nu_covar_mat)[1],dim(nu_mat)[2])
+  for (ind in 1:dim(nu_covar_mat)[1]){
     pi_l_new[ind,] <- CalcPiHelper(nu_mat,nu_covar_mat[ind,])
   }
   
@@ -1289,7 +1369,7 @@ CalcPi <- function(nu_mat,nu_covar_mat){
 }
 
 CalcNu <- function(nu_mat,re_prob,nu_covar_mat){
-  
+  if(dim(re_prob)[2] == 1){return(nu_mat)}
   # nu_long <- as.vector(rbind(nu[-1],nu2[-1]))
   # old_mlike <- NuLogLike(nu_long)
   old_mlike <- CalcLikelihood(alpha,CalcPi(nu_mat,nu_covar_mat))
@@ -1392,27 +1472,26 @@ CalcNu <- function(nu_mat,re_prob,nu_covar_mat){
 # }
 
 
-Viterbi <- function(){
+Viterbi <- function(act,light,vcovar_mat){
   decoded_array <- array(NA, dim = c(day_length,num_of_people,mix_num))
   for (ind in 1:num_of_people){
     for (clust_i in 1:mix_num){
-      vit_ind_vec <- ViterbiIndHelper(ind,clust_i)
+      vit_ind_vec <- ViterbiIndHelper(ind,clust_i,act,light,vcovar_mat)
       decoded_array[,ind,clust_i] <- vit_ind_vec
     }
   }
   return(decoded_array)
 }
 
-ViterbiIndHelper <- function(ind,clust_i){
+ViterbiIndHelper <- function(ind,clust_i,act,light,vcovar_mat){
   
   
   tran_list_clust <- tran_list[[clust_i]]
   
-  emit_act_week <- emit_act[,,,1]
-  emit_act_weekend <- emit_act[,,,2]
-  
-  emit_light_week <- emit_light[,,,1]
-  emit_light_weekend <- emit_light[,,,2]
+  emit_act_week <- array(emit_act[,,,1],dim = c(2,2,mix_num))
+  emit_light_week <- array(emit_light[,,,1],dim = c(2,2,mix_num))
+  emit_act_weekend <- array(emit_act[,,,2],dim = c(2,2,mix_num))
+  emit_light_weekend <- array(emit_light[,,,2],dim = c(2,2,mix_num))
   
   vcovar_vec <- vcovar_mat[,ind]
   
@@ -1603,23 +1682,35 @@ CalcSigmas <- function(obs_mat,lod_obs,weights_array,mean_mat){
 
 
 Forward <- function(act, light,init,tran_list, 
-                    emit_act_week, emit_light_week, emit_act_weekend, emit_light_weekend, 
+                    emit_act, emit_light,
                     lod_act, lod_light, corr_mat, beta_vec, beta_age, 
                     event_vec, bline_vec, cbline_vec, lintegral_mat, log_sweights_vec, 
                     age_vec, vcovar_mat, lambda_act_mat, lambda_light_mat, tobit, incl_surv){
   
   alpha_list <- list()
   day_length <- dim(act)[1]
-  for (ind in 1:num_of_people){
+  
+  emit_act_week <- array(emit_act[,,,1],dim = c(2,2,mix_num))
+  emit_light_week <- array(emit_light[,,,1],dim = c(2,2,mix_num))
+  emit_act_weekend <- array(emit_act[,,,2],dim = c(2,2,mix_num))
+  emit_light_weekend <- array(emit_light[,,,2],dim = c(2,2,mix_num))
+  
+  if (incl_surv == 0 | incl_surv == 1){
+    adj_incl_surv <- 0
+  } else {
+    adj_incl_surv <- 1
+  }
+  
+  for (ind in 1:dim(act)[2]){
     alpha_array <- array(NA,dim = c(day_length,2,mix_num))
-    
+    ind_log_sweight <- log_sweights_vec[ind]
     
     for (clust_i in 1:mix_num){
       #NEED TO ADD WEIGHT
-      alpha_array[,,clust_i] <- ForwardIndC(act[,ind], light[,ind], init[clust_i,], tran_list, emit_act[,,,1], emit_light[,,,1], 
-                                            emit_act[,,,2], emit_light[,,,2],clust_i-1, lod_act, lod_light, corr_mat, 
+      alpha_array[,,clust_i] <- ForwardIndC(act[,ind], light[,ind], init[clust_i,], tran_list, emit_act_week, emit_light_week, 
+                                            emit_act_weekend, emit_light_weekend,clust_i-1, lod_act, lod_light, corr_mat, 
                                             beta_vec, beta_age,age_vec[ind],surv_event[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, 
-                                            0, vcovar_mat[,ind],lambda_act_mat, lambda_light_mat, tobit, incl_surv)
+                                            ind_log_sweight, vcovar_mat[,ind],lambda_act_mat, lambda_light_mat, tobit, adj_incl_surv*beta_bool)
       alpha_list[[ind]] <- alpha_array
     }
   }
@@ -1628,19 +1719,25 @@ Forward <- function(act, light,init,tran_list,
 
 
 Backward <- function(act, light, tran_list, 
-                     emit_act_week, emit_light_week, emit_act_weekend, emit_light_weekend, 
+                     emit_act, emit_light, 
                      lod_act, lod_light, corr_mat, lintegral_mat, vcovar_mat,
                      lambda_act_mat, lambda_light_mat, tobit){
   
   beta_list <- list()
-  for (ind in 1:num_of_people){
+  
+  emit_act_week <- array(emit_act[,,,1],dim = c(2,2,mix_num))
+  emit_light_week <- array(emit_light[,,,1],dim = c(2,2,mix_num))
+  emit_act_weekend <- array(emit_act[,,,2],dim = c(2,2,mix_num))
+  emit_light_weekend <- array(emit_light[,,,2],dim = c(2,2,mix_num))
+  
+  for (ind in 1:dim(act)[2]){
     beta_array <- array(NA,dim = c(day_length,2,mix_num))
     
     
     for (clust_i in 1:mix_num){
       #NEED TO ADD WEIGHT
-      beta_array[,,clust_i] <- BackwardIndC(act[,ind], light[,ind], tran_list, emit_act[,,,1], emit_light[,,,1], 
-                                            emit_act[,,,2], emit_light[,,,2],clust_i-1, lod_act, lod_light, corr_mat, 
+      beta_array[,,clust_i] <- BackwardIndC(act[,ind], light[,ind], tran_list, emit_act_week, emit_light_week, 
+                                            emit_act_weekend, emit_light_weekend,clust_i-1, lod_act, lod_light, corr_mat, 
                                             lintegral_mat, 
                                             vcovar_mat[,ind],lambda_act_mat, lambda_light_mat, tobit)
       beta_list[[ind]] <- beta_array
@@ -1652,20 +1749,16 @@ Backward <- function(act, light, tran_list,
 
 
 CalcS <- function(event_time,cbline_vec_new,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment){
-  surv_mat_ind <- matrix(NA,length(event_time),dim(act)[2])
+  surv_mat_ind <- matrix(NA,length(event_time),dim(re_prob)[1])
   surv_vec <- numeric(length(event_time))
   
-  for (ind in 1:dim(act)[2]){
+  for (ind in 1:dim(re_prob)[1]){
     for (t in 1:length(event_time)){
       rs <- 0
       
       
-      if (incl_surv){
-        for (re_ind in 1:mix_num){
-          rs <- rs + exp(-cbline_vec_new[t]* exp(beta_vec[re_ind]+(beta_age * age_vec[ind]))) * re_prob[ind,re_ind]
-        }
-      } else { 
-        rs <- exp(-cbline_vec_new[t]* exp(beta_vec[mix_assignment[ind]]+(beta_age * age_vec[ind]))) 
+      for (re_ind in 1:mix_num){
+        rs <- rs + exp(-cbline_vec_new[t]* exp(beta_vec[re_ind]+(beta_age * age_vec[ind]))) * re_prob[ind,re_ind]
       }
       
       surv_vec[t] <- rs
@@ -1696,15 +1789,9 @@ CalcCInd <- function(tau,surv_event,surv_time,beta_vec,beta_age,re_prob,age_vec,
     
     for(j in jsurv_inds){
       
-      if (incl_surv){
-        gi <- sum(re_prob[i,] * exp(beta_vec)*exp(beta_age*age_vec[i])* age_vec[i])
-        gj <- sum(re_prob[j,] * exp(beta_vec)*exp(beta_age*age_vec[j])* age_vec[j])
-      } else {
-        gi <- exp(beta_vec[mix_assignment[i]])*exp(beta_age*age_vec[i])* age_vec[i]
-        gj <- exp(beta_vec[mix_assignment[j]])*exp(beta_age*age_vec[j])* age_vec[j]
-      }
-      
-      
+      gi <- sum(re_prob[i,] * exp(beta_vec)*exp(beta_age*age_vec[i])* age_vec[i])
+      gj <- sum(re_prob[j,] * exp(beta_vec)*exp(beta_age*age_vec[j])* age_vec[j])
+    
       denom <- denom + (Vec2StepPlot(cens_dist,cens_dist_time,surv_time[i])^-2)
       num <- num + (Vec2StepPlot(cens_dist,cens_dist_time,surv_time[i])^-2 * (gi>gj))
       
@@ -1779,138 +1866,323 @@ IndBSold <- function(){
   return(bs_vec)
 }
 
+
+CalcCindex <- function(surv_time,surv_event,beta_vec,beta_age,re_prob,age_vec){
+  denom <- 0
+  num <- 0
+  for (j in 1:length(surv_time)){
+    
+    
+    for (i in 1:length(surv_time)){
+      if (surv_event[j] == 1){
+        if (i != j){
+          
+          risk_i <- (re_prob[i,] %*% beta_vec)+(beta_age * age_vec[i])
+          risk_j <- (re_prob[j,] %*% beta_vec)+(beta_age * age_vec[j])
+          
+          if (surv_time[i] > surv_time[j]){
+            denom <- denom + 1
+            
+            if (risk_j > risk_i){
+              num <- num + 1
+            }
+            
+          }
+          
+          
+        }
+      }
+      
+    }
+  }
+  
+  return(num/denom)
+}
+
+
+CalcIBS <- function(surv_time,surv_event,cbline_vec,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment){
+  event_time <- unique(sort(surv_time))
+  cbline_vec_new <- unique(sort(cbline_vec))
+  # cbline_vec_new <- basehaz(cox1,centered = F)[,1]
+  
+  stime_vec <- c()
+  for (stime in event_time){
+    stime_vec <- c(stime_vec,which(surv_time == stime)[1])
+  }
+  
+  cbline_vec_new <- cbline_vec[stime_vec]
+  
+  surv_mat_ind <- CalcS(event_time,cbline_vec_new,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment)
+  
+  
+  
+  IBS_times <- sort(unique(surv_time))
+  # IBS_times <- sort(surv_time)
+  # Calculate the IBS, again including the observed event times, censoring
+  # variables, and the prediction timepoints corresponding to each row of the
+  # survival prob matrix
+  
+  ibs <- integrated_brier_score(y_true = Surv(surv_time, surv_event), 
+                                surv = t(surv_mat_ind), 
+                                times = IBS_times)
+  
+  return(ibs)
+}
+
+
+
 readCpp( "cFunctions.cpp" )
 readCpp( "../Rcode/cFunctions.cpp" )
-
 ################## EM Setup ################## 
-
 ###### True Settings ###### 
-day_length <- 96 * 2
-num_of_people <- 3000
-missing_perc <- .25
-
-init_true <- matrix(NA,ncol = 2,nrow = mix_num)
-init_true[,1] <- seq(.1,.9,length.out = mix_num)
-init_true[,2] <- 1 - init_true[,1]
-
-params_tran_week_true <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T) 
-params_tran_week_true[,1] <- seq(-2.5,-3.5,length.out = mix_num)
-params_tran_week_true[,2] <- seq(-.25,-.75,length.out = mix_num)
-params_tran_week_true[,3] <- seq(-.5,-.9,length.out = mix_num)
-params_tran_week_true[,4] <- seq(1.4,1.8,length.out = mix_num)
-params_tran_week_true[,5] <- seq(0,.4,length.out = mix_num)
-params_tran_week_true[,6] <- seq(.2,.6,length.out = mix_num)
-
-params_tran_weekend_true <- matrix(rep(c(-5,3.5,2.2,-1,.4,-.4),mix_num),ncol = 6,byrow = T) 
-params_tran_weekend_true <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T) 
-params_tran_weekend_true[,1] <- seq(-4.5,-5.5,length.out = mix_num)
-params_tran_weekend_true[,2] <- seq(2.5,4.5,length.out = mix_num)
-params_tran_weekend_true[,3] <- seq(1.5,2,length.out = mix_num)
-params_tran_weekend_true[,4] <- seq(-1.4,-1.8,length.out = mix_num)
-params_tran_weekend_true[,5] <- seq(0,.6,length.out = mix_num)
-params_tran_weekend_true[,6] <- seq(-.2,-.6,length.out = mix_num)
+if (sim_size == 0){
+  day_length <- 96 * 2
+  num_of_people <- 2000
+  missing_perc <- .2
+} else if (sim_size == 1) {
+  day_length <- 96 * 4
+  num_of_people <- 4000
+  missing_perc <- .2
+} else {
+  day_length <- 96 * 7
+  num_of_people <- 7000
+  missing_perc <- .2
+}
+  
 
 
-params_tran_array_dim <- c(mix_num,6,vcovar_num)
-params_tran_array_true <- array(NA,dim = params_tran_array_dim)
-params_tran_array_true[,,1] <- params_tran_week_true 
-params_tran_array_true[,,2] <- params_tran_weekend_true 
-params_tran_array_true <- params_tran_array_true 
+if (misspecification){
+  model_name_loadin <- "JMHMM"
+  if (!tobit){model_name_loadin <- paste0(model_name_loadin,"NonTob")}
+  if (incl_surv==0){model_name_loadin <- paste0(model_name_loadin,"NoSurv")}
+  if (incl_surv==1){model_name_loadin <- paste0(model_name_loadin,"HalfSurv")}
+  if (!incl_light){model_name_loadin <- paste0(model_name_loadin,"NoLight")}
+  if (!incl_act){model_name_loadin <- paste0(model_name_loadin,"NoAct")}
+  model_name_loadin <- paste0(model_name_loadin,"Mix",misspecification,"Seed",".rda")
+  
+  print(paste("Loading",model_name_loadin))
+  setwd("Data")
+  load(model_name_loadin)
+  setwd("..")
+  
+  
+  init_true <- to_save[[2]][[1]]
+  params_tran_array_true <- to_save[[2]][[2]]
+  emit_act_true <- to_save[[2]][[3]]
+  emit_light_true <- to_save[[2]][[4]]
+  corr_mat_true <- to_save[[2]][[5]]
+  nu_mat_true <- to_save[[2]][[6]]
+  beta_vec_true <- to_save[[2]][[7]]
+  beta_age_true <- to_save[[2]][[8]]
+  re_prob_true <- to_save[[2]][[10]]
+  #NEED TO CHANGE THIS TOO
+  #FIRST 13 SHOULD BE 12
+  lambda_act_mat_true <- to_save[[2]][[13]]
+  lambda_light_mat_true <- to_save[[2]][[13]]
+  
+  if (misspecification == mix_num){
+    init <- init_true
+    params_tran_array <- params_tran_array_true
+    emit_act <- emit_act_true
+    emit_light <- emit_light_true
+    corr_mat <- corr_mat_true
+    beta_vec <- beta_vec_true
+    beta_age <- beta_age_true
+    nu_mat <- nu_mat_true
+    lambda_act_mat <- lambda_act_mat_true
+    lambda_light_mat <- lambda_light_mat_true
+  } else {
+    
+    params_tran_week <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T)
+    params_tran_week[1:misspecification,] <- params_tran_array_true[,,1]
+    params_tran_week[(misspecification+1):mix_num,] <- params_tran_array_true[1,,1]
+    
+    params_tran_weekend <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T)
+    params_tran_weekend[1:misspecification,] <- params_tran_array_true[,,2]
+    params_tran_weekend[(misspecification+1):mix_num,] <- params_tran_array_true[1,,2]
+    
+    params_tran_array_dim <- c(mix_num,6,vcovar_num)
+    params_tran_array <- array(NA,dim = params_tran_array_dim)
+    params_tran_array[,,1] <- params_tran_week 
+    params_tran_array[,,2] <- params_tran_weekend
+    params_tran_array[(misspecification+1):mix_num,,] <- params_tran_array[(misspecification+1):mix_num,,] + 
+      runif(length(unlist(params_tran_array[(misspecification+1):mix_num,,])),-.5,.5)
+    
+    emit_act_week <- array(emit_act_true[,,,1], c(2,2,mix_num))
+    emit_act_weekend <- array(emit_act_true[,,1,2], c(2,2,mix_num))
+    emit_act <- array(NA, c(2,2,mix_num,2))
+    emit_act[,,,1] <- emit_act_week
+    emit_act[,,,2] <- emit_act_weekend
+    emit_act[,,(misspecification+1):mix_num,] <- emit_act[,,(misspecification+1):mix_num,] + runif(4*(mix_num-misspecification),-.5,.5)
+        
+    emit_light_week <- array(emit_light_true[,,1,1], c(2,2,mix_num))
+    emit_light_weekend <- array(emit_light_true[,,1,2], c(2,2,mix_num))
+    emit_light <- array(NA, c(2,2,mix_num,2))
+    emit_light[,,,1] <- emit_light_week
+    emit_light[,,,2] <- emit_light_weekend
+    emit_light[,,(misspecification+1):mix_num,] <- emit_light[,,(misspecification+1):mix_num,] + runif(4*(mix_num-misspecification),-.5,.5)
+    
+    corr_mat <- array(NA, c(mix_num,2,2))
+    corr_mat[,1,1] <- corr_mat_true[1,1,1]
+    corr_mat[,2,1] <- corr_mat_true[1,2,1]
+    corr_mat[,1,2] <- corr_mat_true[1,1,2]
+    corr_mat[,2,2] <- corr_mat_true[1,2,2]
+    corr_mat[(misspecification+1):mix_num,,] <- corr_mat[(misspecification+1):mix_num,,] + runif(2*(mix_num-misspecification),-.15,.15)
+    
+    beta_vec <- seq(0,3,length.out = mix_num)
+    beta_age <- 0.07 + runif(1,-.01,.01)
+    
+    nu <- c(0,seq(-.04,.05,length.out = (mix_num-1)))
+    nu2 <- c(0,seq(.0005,-.0015,length.out = (mix_num-1)))
+    nu_stat <- c(0,seq(.01,-.025,length.out = (mix_num-1)))
+    nu2_stat <- c(0,seq(-.001,.002,length.out = (mix_num-1)))
+    
+    nu_mat <- matrix(NA,nrow = 4, ncol = mix_num)
+    nu_mat[1,] <- nu
+    nu_mat[2,] <- nu2
+    nu_mat[3,] <- nu_stat
+    nu_mat[4,] <- nu2_stat
+    
+    ###NEED TO UPDATE IF USING THIS
+    lambda_act_mat <- array(NA,dim = c(mix_num,2,2))
+    lambda_act_mat[,1,1] <- seq(.01,.05,length.out = mix_num)
+    lambda_act_mat[,2,1] <- seq(.3,.6,length.out = mix_num)
+    lambda_act_mat[,1,2] <- seq(.01,.1,length.out = mix_num)
+    lambda_act_mat[,2,2] <- seq(.3,.7,length.out = mix_num)
+    
+    lambda_light_mat <- array(NA,dim = c(mix_num,2,2))
+    lambda_light_mat[,1,1] <- seq(.01,.15,length.out = mix_num)
+    lambda_light_mat[,2,1] <- seq(.2,.6,length.out = mix_num)
+    lambda_light_mat[,1,2] <- seq(.01,.2,length.out = mix_num)
+    lambda_light_mat[,2,2] <- seq(.3,.8,length.out = mix_num)
+  }
+  
+} else {
+  
+  init_true <- matrix(NA,ncol = 2,nrow = mix_num)
+  init_true[,1] <- seq(.1,.9,length.out = mix_num)
+  init_true[,2] <- 1 - init_true[,1]
+  
+  params_tran_week_true <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T) 
+  params_tran_week_true[,1] <- seq(-3.2,-2,length.out = mix_num)
+  params_tran_week_true[,2] <- seq(1.3,.8,length.out = mix_num)
+  params_tran_week_true[,3] <- seq(.1,.9,length.out = mix_num)
+  params_tran_week_true[,4] <- seq(-1.8,-2.4,length.out = mix_num)
+  params_tran_week_true[,5] <- seq(-1.3,-.8,length.out = mix_num)
+  params_tran_week_true[,6] <- seq(-.7,-.9,length.out = mix_num)
+  
+  params_tran_weekend_true <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T) 
+  params_tran_weekend_true[,1] <- seq(-3,-2.1,length.out = mix_num)
+  params_tran_weekend_true[,2] <- seq(1,.7,length.out = mix_num)
+  params_tran_weekend_true[,3] <- seq(.1,.9,length.out = mix_num)
+  params_tran_weekend_true[,4] <- seq(-1.8,-2.4,length.out = mix_num)
+  params_tran_weekend_true[,5] <- seq(-1.3,-.8,length.out = mix_num)
+  params_tran_weekend_true[,6] <- seq(-.9,-1.1,length.out = mix_num)
+  
+  
+  params_tran_array_dim <- c(mix_num,6,vcovar_num)
+  params_tran_array_true <- array(NA,dim = params_tran_array_dim)
+  params_tran_array_true[,,1] <- params_tran_week_true 
+  params_tran_array_true[,,2] <- params_tran_weekend_true 
+  
+  emit_act_week_true <- array(NA, c(2,2,mix_num))
+  emit_act_week_true[1,1,] <- seq(4,5,length.out = mix_num)
+  emit_act_week_true[1,2,] <- seq(2,3,length.out = mix_num)
+  emit_act_week_true[2,1,] <- seq(2,1,length.out = mix_num)
+  emit_act_week_true[2,2,] <- seq(3,2,length.out = mix_num)
+  
+  emit_act_weekend_true <- array(NA, c(2,2,mix_num))
+  emit_act_weekend_true[1,1,] <- seq(5,6,length.out = mix_num)
+  emit_act_weekend_true[1,2,] <- seq(3,4,length.out = mix_num)
+  emit_act_weekend_true[2,1,] <- seq(2,1,length.out = mix_num)
+  emit_act_weekend_true[2,2,] <- seq(3,2,length.out = mix_num)
+  
+  emit_act_true <- array(NA, c(2,2,mix_num,2))
+  emit_act_true[,,,1] <- emit_act_week_true
+  emit_act_true[,,,2] <- emit_act_weekend_true
+  
+  
+  emit_light_week_true <- array(NA, c(2,2,mix_num))
+  emit_light_week_true[1,1,] <- seq(-2,-1,length.out = mix_num)
+  emit_light_week_true[1,2,] <- seq(8,6,length.out = mix_num)
+  emit_light_week_true[2,1,] <- seq(-17,-19,length.out = mix_num)
+  emit_light_week_true[2,2,] <- seq(13,15,length.out = mix_num)
+  
+  emit_light_weekend_true <- array(NA, c(2,2,mix_num))
+  emit_light_weekend_true[1,1,] <- seq(-3,-2,length.out = mix_num)
+  emit_light_weekend_true[1,2,] <- seq(9,7,length.out = mix_num)
+  emit_light_weekend_true[2,1,] <- seq(-18,-21,length.out = mix_num)
+  emit_light_weekend_true[2,2,] <- seq(15,18,length.out = mix_num)
+  
+  emit_light_true <- array(NA, c(2,2,mix_num,2))
+  emit_light_true[,,,1] <- emit_light_week_true
+  emit_light_true[,,,2] <- emit_light_weekend_true
+  
+  corr_mat_true <- array(NA, c(mix_num,2,2))
+  corr_mat_true[,1,1] <- seq(0,.2,length.out = mix_num)
+  corr_mat_true[,2,1] <- seq(.1,.3,length.out = mix_num)
+  corr_mat_true[,1,2] <- seq(.2,.4,length.out = mix_num)
+  corr_mat_true[,2,2] <- seq(.3,.5,length.out = mix_num)
+  
+  beta_vec_true <- seq(0,3,length.out = mix_num)
+  beta_age_true <- 0.07
+  
+  nu_true <- c(0,seq(-.04,.05,length.out = (mix_num-1)))
+  nu2_true <- c(0,seq(.0005,-.0015,length.out = (mix_num-1)))
+  nu_stat_true <- c(0,seq(.01,-.025,length.out = (mix_num-1)))
+  nu2_stat_true <- c(0,seq(-.001,.002,length.out = (mix_num-1)))
+  
+  nu_mat_true <- matrix(NA,nrow = 4, ncol = mix_num)
+  nu_mat_true[1,] <- nu_true
+  nu_mat_true[2,] <- nu2_true
+  nu_mat_true[3,] <- nu_stat_true
+  nu_mat_true[4,] <- nu2_stat_true
+  
+  lambda_act_mat_true <- array(NA,dim = c(mix_num,2,2))
+  lambda_act_mat_true[,1,1] <- seq(.01,.05,length.out = mix_num)
+  lambda_act_mat_true[,2,1] <- seq(.3,.6,length.out = mix_num)
+  lambda_act_mat_true[,1,2] <- seq(.01,.1,length.out = mix_num)
+  lambda_act_mat_true[,2,2] <- seq(.3,.7,length.out = mix_num)
+  
+  lambda_light_mat_true <- array(NA,dim = c(mix_num,2,2))
+  lambda_light_mat_true[,1,1] <- seq(.01,.15,length.out = mix_num)
+  lambda_light_mat_true[,2,1] <- seq(.2,.6,length.out = mix_num)
+  lambda_light_mat_true[,1,2] <- seq(.01,.2,length.out = mix_num)
+  lambda_light_mat_true[,2,2] <- seq(.3,.8,length.out = mix_num)
+  
+  init <- init_true
+  params_tran_array <- params_tran_array_true
+  emit_act <- emit_act_true
+  emit_light <- emit_light_true
+  corr_mat <- corr_mat_true
+  beta_vec <- beta_vec_true
+  beta_age <- beta_age_true
+  nu_mat <- nu_mat_true
+  lambda_act_mat <- lambda_act_mat_true
+  lambda_light_mat <- lambda_light_mat_true
+}
 
-emit_act_week_true <- array(NA, c(2,2,mix_num))
-emit_act_week_true[1,1,] <- seq(4,5,length.out = mix_num)
-emit_act_week_true[1,2,] <- seq(2,3,length.out = mix_num)
-emit_act_week_true[2,1,] <- seq(2,1,length.out = mix_num)
-emit_act_week_true[2,2,] <- seq(3,2,length.out = mix_num)
+  
+if (load_data){
+  setwd("Data")
+  load("JMHMMMix4Seed.rda")
+  setwd("..")
+  
+  init_true <- to_save[[2]][[1]]
+  params_tran_array_true <- to_save[[2]][[2]]
+  emit_act_true <- to_save[[2]][[3]]
+  emit_light_true <- to_save[[2]][[4]]
+  corr_mat_true <- to_save[[2]][[5]]
+  nu_mat_true <- to_save[[2]][[6]]
+  beta_vec_true <- to_save[[2]][[7]]
+  beta_age_true <- to_save[[2]][[8]]
+  re_prob_true <- to_save[[2]][[10]]
+  #NEED TO CHANGE THIS TOO
+  #FIRST 13 SHOULD BE 12
+  lambda_act_mat_true <- to_save[[2]][[13]]
+  lambda_light_mat_true <- to_save[[2]][[13]]
+}
 
-emit_act_weekend_true <- array(NA, c(2,2,mix_num))
-emit_act_weekend_true[1,1,] <- seq(5,6,length.out = mix_num)
-emit_act_weekend_true[1,2,] <- seq(3,4,length.out = mix_num)
-emit_act_weekend_true[2,1,] <- seq(2,1,length.out = mix_num)
-emit_act_weekend_true[2,2,] <- seq(3,2,length.out = mix_num)
-
-emit_act_true <- array(NA, c(2,2,mix_num,2))
-emit_act_true[,,,1] <- emit_act_week_true
-emit_act_true[,,,2] <- emit_act_weekend_true
-
-
-emit_light_week_true <- array(NA, c(2,2,mix_num))
-emit_light_week_true[1,1,] <- seq(-2,-1,length.out = mix_num)
-emit_light_week_true[1,2,] <- seq(8,6,length.out = mix_num)
-emit_light_week_true[2,1,] <- seq(-17,-19,length.out = mix_num)
-emit_light_week_true[2,2,] <- seq(13,15,length.out = mix_num)
-
-emit_light_weekend_true <- array(NA, c(2,2,mix_num))
-emit_light_weekend_true[1,1,] <- seq(-3,-2,length.out = mix_num)
-emit_light_weekend_true[1,2,] <- seq(9,7,length.out = mix_num)
-emit_light_weekend_true[2,1,] <- seq(-18,-21,length.out = mix_num)
-emit_light_weekend_true[2,2,] <- seq(15,18,length.out = mix_num)
-
-emit_light_true <- array(NA, c(2,2,mix_num,2))
-emit_light_true[,,,1] <- emit_light_week_true
-emit_light_true[,,,2] <- emit_light_weekend_true
-
-corr_mat_true <- array(NA, c(mix_num,2,2))
-corr_mat_true[,1,1] <- seq(0,.2,length.out = mix_num)
-corr_mat_true[,2,1] <- seq(.1,.3,length.out = mix_num)
-corr_mat_true[,1,2] <- seq(.2,.4,length.out = mix_num)
-corr_mat_true[,2,2] <- seq(.3,.5,length.out = mix_num)
-
-beta_vec_true <- seq(0,3,length.out = mix_num)
-beta_age_true <- 0.07
-
-# nu_true <- c(0,seq(-.4,.5,length.out = (mix_num-1)))
-# nu2_true <- c(0,seq(.05,-.15,length.out = (mix_num-1)))
-# nu_stat_true <- c(0,seq(1,-2.5,length.out = (mix_num-1)))
-# nu2_stat_true <- c(0,seq(-.1,.2,length.out = (mix_num-1)))
-
-nu_true <- c(0,seq(-.04,.05,length.out = (mix_num-1)))
-nu2_true <- c(0,seq(.0005,-.0015,length.out = (mix_num-1)))
-nu_stat_true <- c(0,seq(.01,-.025,length.out = (mix_num-1)))
-nu2_stat_true <- c(0,seq(-.001,.002,length.out = (mix_num-1)))
-
-# nu_mod_true <- c(0,seq(-1,1,length.out = (mix_num-1)))
-
-nu_mat_true <- matrix(NA,nrow = 4, ncol = mix_num)
-nu_mat_true[1,] <- nu_true
-nu_mat_true[2,] <- nu2_true
-nu_mat_true[3,] <- nu_stat_true
-nu_mat_true[4,] <- nu2_stat_true
-# nu_mat_true[5,] <- nu_mod_true
-
-lambda_act_mat_true <- array(NA,dim = c(mix_num,2,2))
-lambda_act_mat_true[,1,1] <- seq(.01,.05,length.out = mix_num)
-lambda_act_mat_true[,2,1] <- seq(.3,.6,length.out = mix_num)
-lambda_act_mat_true[,1,2] <- seq(.01,.1,length.out = mix_num)
-lambda_act_mat_true[,2,2] <- seq(.3,.7,length.out = mix_num)
-
-lambda_light_mat_true <- array(NA,dim = c(mix_num,2,2))
-lambda_light_mat_true[,1,1] <- seq(.01,.15,length.out = mix_num)
-lambda_light_mat_true[,2,1] <- seq(.2,.6,length.out = mix_num)
-lambda_light_mat_true[,1,2] <- seq(.01,.2,length.out = mix_num)
-lambda_light_mat_true[,2,2] <- seq(.3,.8,length.out = mix_num)
-
-
-# load("/Users/aronjr/Documents/Predoc/JointHMM/Data/JMHMM4SeedNA.rda")
-# init_true <- to_save[[2]][[1]]
-# params_tran_array_true<- to_save[[2]][[2]]
-# emit_act_true <- to_save[[2]][[3]]
-# emit_light_true <- to_save[[2]][[4]]
-# corr_mat_true <- to_save[[2]][[5]]
-# nu_mat_true <- to_save[[2]][[6]][1:4,]
-# beta_vec_true <- to_save[[2]][[7]]
-# beta_age_true <- to_save[[2]][[8]]
-
-init <- init_true
-params_tran_array <- params_tran_array_true
-emit_act <- emit_act_true
-emit_light <- emit_light_true
-corr_mat <- corr_mat_true
-beta_vec <- beta_vec_true
-beta_age <- beta_age_true
-nu_mat <- nu_mat_true
-lambda_act_mat <- lambda_act_mat_true
-lambda_light_mat <- lambda_light_mat_true
 
 ###### Simulate Data ###### 
 if (!real_data){
@@ -1928,7 +2200,8 @@ if (!real_data){
                                nu_mat = nu_mat_true,
                                beta_age_true = beta_age_true,
                                missing_perc = missing_perc, beta_vec_true = beta_vec_true,
-                               lambda_act_mat = lambda_act_mat_true,lambda_light_mat = lambda_light_mat_true)
+                               lambda_act_mat = lambda_act_mat_true,lambda_light_mat = lambda_light_mat_true,
+                               misspecification = misspecification)
   mc <- simulated_hmm[[1]]
   act <- simulated_hmm[[2]]
   light <- simulated_hmm[[3]]
@@ -1953,7 +2226,6 @@ if (!real_data){
   
   log_sweights_vec <- numeric(dim(act)[2])
 } 
-
 ###### Read in Data ###### 
 if (real_data) {
   setwd("Data/")
@@ -1967,7 +2239,7 @@ if (real_data) {
   load("Wavedata_H.rda")
   setwd("..")
   
-  sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
+  # sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
   # sim_num <- 1
   
   act_G <- wave_data_G[[1]]
@@ -2032,6 +2304,7 @@ if (real_data) {
   surv_time <- lmf_data$permth_exm
 
   if (leave_out){
+    
     setwd("Data")
     load("LeaveOutMat.rda")
     setwd("..")
@@ -2043,24 +2316,42 @@ if (real_data) {
     id_old <- id
     surv_event_old <- surv_event
     surv_time_old <- surv_time
+    log_sweights_vec_old <- log_sweights_vec
     
     first_day_vec_old <- as.numeric(id_old$PAXDAYWM)
     vcovar_mat_old <- sapply(first_day_vec_old,FirstDay2WeekInd)
     
     age_vec_old <-id_old$age
-    modact_vec_old <- id_old$modact
     statact_vec_old <- id_old$statact
-    nu_covar_mat_old <- cbind(age_vec_old/10,(age_vec_old/10)^2,statact_vec_old,statact_vec_old^2,modact_vec_old)
+    nu_covar_mat_old <- cbind(age_vec_old/10,(age_vec_old/10)^2,statact_vec_old,statact_vec_old^2)
     
     act <- act[,-c(leave_out_inds)]
     light <- light[,-c(leave_out_inds)]
     id <- id[-c(leave_out_inds),]
     surv_event <- surv_event[-c(leave_out_inds)]
     surv_time <- surv_time[-c(leave_out_inds)]
+    
+    log_sweights_vec <- log(id$sweights/2)
+    
   }
   
   first_day_vec <- as.numeric(id$PAXDAYWM)
   vcovar_mat <- sapply(first_day_vec,FirstDay2WeekInd)
+  
+  if (single_day != 0){
+    single_day_mat <- sapply(first_day_vec,FirstDay2SingleDay,target_day = single_day)
+    new_act <- matrix(NA,96,dim(act)[2])
+    new_light <- matrix(NA,96,dim(light)[2])
+    vcovar_mat <- matrix(0,96,dim(light)[2])
+    
+    for (i in 1:dim(act)[2]){
+      new_act[,i] <- act[,i][single_day_mat[,i]==1]
+      new_light[,i] <- light[,i][single_day_mat[,i]==1]
+    }
+    
+    act <- new_act
+    light <- new_light
+  }
   
   day_length <- dim(act)[1]
   num_of_people <- dim(act)[2]
@@ -2071,52 +2362,16 @@ if (real_data) {
   # nu_covar_mat <- cbind(age_vec/10,(age_vec/10)^2,statact_vec,statact_vec^2,modact_vec)
   nu_covar_mat <- cbind(age_vec/10,(age_vec/10)^2,statact_vec,statact_vec^2)
   
+  if (weekend_only){
+    #Only weekend data
+    
+    act[vcovar_mat == 0] <- NA
+    light[vcovar_mat == 0] <- NA
+  }
+    
 }
 
 ###### Initial Settings ###### 
-
-runif_tol <- .75
-
-if (randomize_init){
-  init <- matrix(rep(.5,mix_num*2),ncol = 2)
-  
-  params_tran_array <- params_tran_array_true
-  params_tran_array[params_tran_array<Inf] <- 0
-  params_tran_array[,c(2,3,5,6),] <- 0
-  params_tran_array[,c(1,4),] <- -5
-  params_tran_array <- params_tran_array + runif(unlist(length(params_tran_array_true)),-runif_tol*2,runif_tol*2)
-  
-  
-  emit_act <- emit_act_true + runif(length(unlist(emit_act_true)),-runif_tol,runif_tol)
-  emit_act[,2,,] <- abs(emit_act[,2,,])
-  # emit_act[1,1,,] <- runif(mix_num*2,3,8)
-  # emit_act[2,1,,] <- runif(mix_num*2,-2,2)
-  # emit_act[1,2,,] <- runif(mix_num*2,2,6)
-  # emit_act[2,2,,] <- runif(mix_num*2,2,6)
-
-  emit_light <- emit_light_true + runif(length(unlist(emit_light_true)),-runif_tol*2,runif_tol*2)
-  emit_light[,2,,] <- abs(emit_light[,2,,])
-  # emit_light[1,1,,] <- runif(mix_num*2,2,7)
-  # emit_light[2,1,,] <- runif(mix_num*2,-10,1)
-  # emit_light[1,2,,] <- runif(mix_num*2,1,10)
-  # emit_light[2,2,,] <- runif(mix_num*2,1,10)
-
-
-  corr_mat <- corr_mat_true #+ runif(length(unlist(corr_mat_true)),-runif_tol,runif_tol)
-  corr_mat[corr_mat<2] <- 0
-  # corr_mat <- corr_mat + runif(mix_num*4,-1,1) #+ runif(length(unlist(corr_mat_true)),-runif_tol,runif_tol)
-
-  # beta_vec <- runif(mix_num,-1.5,1.5)
-  # beta_vec[1] <- 0
-  # beta_age <- runif(1,-.3,.3)
-  beta_vec <- numeric(mix_num)
-  beta_age <- 0
-
-  # nu_mat <- matrix(0,dim(nu_covar_mat)[2],mix_num)
-  
-  
-  
-}
 
 time_vec <- c()
 pi_l <- CalcPi(nu_mat,nu_covar_mat)
@@ -2125,36 +2380,67 @@ re_prob <- pi_l
 ##########
 # # load("/Users/aronjr/Documents/Predoc/JointHMM/InterJMHMM2SeedNA.rda")
 #
-if (load_data | leave_out){
-  model_name_loadin <- paste0("Inter",model_name)
+
+if (leave_out|load_data){
+  # Correct way to do it
+  model_name_loadin <- "JMHMM"
+  # if (!real_data){model_name <- paste0(model_name,"SimSize",sim_size)}
+  if (!tobit){model_name_loadin <- paste0(model_name_loadin,"NonTob")}
+  if (incl_surv==0){model_name_loadin <- paste0(model_name_loadin,"NoSurv")}
+  if (incl_surv==1){model_name_loadin <- paste0(model_name_loadin,"HalfSurv")}
+  if (!incl_light){model_name_loadin <- paste0(model_name_loadin,"NoLight")}
+  if (!incl_act){model_name_loadin <- paste0(model_name_loadin,"NoAct")}
+  if (misspecification){model_name_loadin <- paste0(model_name_loadin,"Misspecified",misspecification)}
+  model_name_loadin <- paste0(model_name_loadin,"Mix",mix_num,"Seed",".rda")
+
+  model_name_loadin <- "JMHMMMix4Seed.rda"
+
   print(paste("Loading",model_name_loadin))
-  # setwd("Data")
+  setwd("Data")
   load(model_name_loadin)
-  # setwd("..")
+  setwd("..")
   
+  # if (incl_surv == 2){
+  #   model_name_loadin <- paste0("JMHMMLeaveOutMix",mix_num,"Seed",sim_num,".rda")
+  #   foldername <- paste0("LO",mix_num)
+  # } else {
+  #   model_name_loadin <- paste0("JMHMMLeaveOutNoSurvMix",mix_num,"Seed",sim_num,".rda")
+  #   foldername <- paste0("LONS",mix_num)
+  # }
+  # print(paste("Loading",model_name_loadin))
+  # setwd(foldername)
+  # load(model_name_loadin)
+  # setwd("..")
+    
+    
   init <- to_save[[2]][[1]]
   params_tran_array <- to_save[[2]][[2]]
   emit_act <- to_save[[2]][[3]]
   emit_light <- to_save[[2]][[4]]
   corr_mat <- to_save[[2]][[5]]
-  nu_mat <- to_save[[2]][[6]][1:4,]
+  nu_mat <- to_save[[2]][[6]]
   pi_l <- CalcPi(nu_mat,nu_covar_mat)
   beta_vec <- to_save[[2]][[7]]
   beta_age <- to_save[[2]][[8]]
-  re_prob <- to_save[[2]][[10]]
-  
+  # re_prob <- to_save[[2]][[10]]
+  re_prob <- pi_l
   
   if (leave_out){
-    mix_assignment_true <- apply(re_prob,1,which.max)
-    re_prob <- re_prob[-c(leave_out_inds),]
-    
-    # nu_mat <- to_save[[2]][[6]]
-    nu_mat <- matrix(0,4,mix_num)
-    pi_l <- CalcPi(nu_mat,nu_covar_mat)
-    re_prob <- pi_l
+    setwd("Data")
+    if (incl_surv == 2){
+      load(paste0("JMHMMMix",mix_num,"Seed.rda"))
+    } else {
+      load(paste0("JMHMMNoSurvMix",mix_num,"Seed.rda"))
+    }
+      
+    setwd("..")
+    mix_assignment_true <- apply(to_save[[2]][[10]],1,which.max)
+    re_prob <- to_save[[2]][[10]][-leave_out_inds,]
   }
 
-  lambda_act_mat <- to_save[[2]][[12]]
+  #ISSUE HERE IF NON TOBIT
+  #FIRST 13 should be a 12
+  lambda_act_mat <- to_save[[2]][[13]]
   lambda_light_mat <- to_save[[2]][[13]]
   
 }
@@ -2173,9 +2459,40 @@ if (load_data | leave_out){
 # re_prob <- re_prob[,keep_inds]
 # re_prob <- re_prob/rowSums(re_prob)
 ################## EM ##################
-if(!incl_light){
-  light <- matrix(NA,day_length,num_of_people)
+
+runif_tol <- .05
+
+if (randomize_init){
+  init <- matrix(rep(.5,mix_num*2),ncol = 2)
+  
+  params_tran_array <- params_tran_array + runif(unlist(length(params_tran_array)),-runif_tol*2,runif_tol*2)
+  
+  
+  emit_act <- emit_act + runif(length(unlist(emit_act)),-runif_tol,runif_tol)
+  emit_act[,2,,] <- abs(emit_act[,2,,])
+  
+  emit_light <- emit_light + runif(length(unlist(emit_light)),-runif_tol*2,runif_tol*2)
+  emit_light[,2,,] <- abs(emit_light[,2,,])
+  
+  corr_mat <- corr_mat + runif(length(unlist(corr_mat)),-runif_tol/5,runif_tol/5)
+  
+  if(misspecification == 1){beta_vec <- numeric(length(beta_vec))}
+  beta_vec <- beta_vec + runif(mix_num,-runif_tol,runif_tol)
+  beta_vec[1] <- 0
+  beta_age <- beta_age + runif(1,-runif_tol/10,runif_tol/10)
+  
 }
+
+beta_vec_long <- c(beta_age,beta_vec[-1])
+if(!incl_light){
+  light <- matrix(NA,dim(light)[1],dim(light)[2])
+  light_old <- matrix(NA,dim(light_old)[1],dim(light_old)[2])
+}
+if(!incl_act){
+  act <- matrix(NA,dim(act)[1],dim(act)[2])
+  act_old <- matrix(NA,dim(act_old)[1],dim(act_old)[2])
+}
+
 bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
 bline_vec <- bhaz_vec[[1]]
 cbline_vec <- bhaz_vec[[2]]
@@ -2184,37 +2501,39 @@ lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light
 
 tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,vcovar_num)
 print("Pre Alpha")
+
 alpha <- Forward(act = act,light = light,
          init = init,tran_list = tran_list,
-         emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-         emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
+         emit_act = emit_act,emit_light = emit_light,
          lod_act = lod_act, lod_light = lod_light, 
          corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
          event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
-         lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
+         lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
          age_vec = age_vec, vcovar_mat = vcovar_mat,
          lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit,incl_surv = incl_surv)
 
 beta <- Backward(act = act,light = light, tran_list = tran_list,
-                  emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-                  emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
+                 emit_act = emit_act,emit_light = emit_light,
                   lod_act = lod_act, lod_light =  lod_light, 
                   corr_mat = corr_mat,lintegral_mat = lintegral_mat,vcovar_mat = vcovar_mat,
                   lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit)
          
 print("Post Beta")
 new_likelihood <- CalcLikelihood(alpha,pi_l)
+if (incl_surv == 2 & beta_bool == 0){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
 likelihood_vec <- c(new_likelihood)
 likelihood <- -Inf
 like_diff <- new_likelihood - likelihood
-
 # apply(alpha[[1]][,,1]+beta[[1]][,,1],1,logSumExp)
 iter_count <- 1
 stop_crit <- 1e-3
-if(!real_data){stop_crit <- stop_crit/10}
+# if(!real_data){stop_crit <- stop_crit/10}
+if(mix_num > 8){stop_crit <- stop_crit * 10}
+if(mix_num > 12){stop_crit <- stop_crit * 10}
+if(mix_num > 15){stop_crit <- stop_crit * 5}
 
 while(abs(like_diff) > stop_crit){
-
+# for (i in 1:1){
   start_time <- Sys.time()
   likelihood <- new_likelihood
   
@@ -2225,26 +2544,33 @@ while(abs(like_diff) > stop_crit){
   re_prob <- CalcProbRE(alpha,pi_l)
   
   if(beta_bool){
+
     nu_mat  <- CalcNu(nu_mat,re_prob,nu_covar_mat)
     pi_l <- CalcPi(nu_mat,nu_covar_mat)
     re_prob <- CalcProbRE(alpha,pi_l)
-
-    beta_vec_long <- c(beta_age,beta_vec[-1])
-    beta_vec_long <- CalcBeta(beta_vec_long,incl_surv)
-    beta_age <- beta_vec_long[1]
-    beta_vec <- c(0,beta_vec_long[-1])
-
-    bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
-    bline_vec <- bhaz_vec[[1]]
-    cbline_vec <- bhaz_vec[[2]]
+    
+    if (incl_surv == 2){
+      beta_vec_long <- c(beta_age,beta_vec[-1])
+      beta_vec_long_se <- CalcBeta(beta_vec_long,incl_surv)
+      # beta_vec_long_se <- CalcBeta(beta_vec_long,1)
+      beta_vec_long <- beta_vec_long_se[[1]]
+      beta_se <- beta_vec_long_se[[2]]
+      beta_age <- beta_vec_long[1]
+      beta_vec <- c(0,beta_vec_long[-1])
+      
+      bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+      bline_vec <- bhaz_vec[[1]]
+      cbline_vec <- bhaz_vec[[2]]
+    }
+      
   }
-  
   
   params_tran_array_old <- params_tran_array
   tran_gradhess_list <- CalcTranCHelper(alpha,beta,act,light,params_tran_array,
                                  emit_act,emit_light,corr_mat,
                                  pi_l,lod_act,lod_light,lintegral_mat,vcovar_mat,
                                  lambda_act_mat, lambda_light_mat, tobit, check_tran,likelihood)
+  
   params_tran_array <- LM(tran_gradhess_list[[1]],tran_gradhess_list[[2]],params_tran_array,check_tran,likelihood,pi_l)
 
   init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
@@ -2258,30 +2584,32 @@ while(abs(like_diff) > stop_crit){
   ##### Bivariate Normal Est  #####
   
   ##### Mixture Normal Param
-  
   if (tobit){
     
     if(incl_light){
-      corr_mat[,1,] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      corr_mat[,2,] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
 
       emit_light[1,1,,] <- UpdateNorm(CalcLightMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
       emit_light[2,1,,] <- UpdateNorm(CalcLightMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
 
-
       emit_light[1,2,,] <- UpdateNorm(CalcLightSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
       emit_light[2,2,,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-
     }
+    
+    if (incl_act){
+      emit_act[1,2,,] <- UpdateNorm(CalcActSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      #HAD ISSUES WITH THIS VAR
+      emit_act[2,2,,] <- UpdateNorm(CalcActSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
 
-    emit_act[1,2,,] <- UpdateNorm(CalcActSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-    #HAD ISSUES WITH THIS VAR
-    emit_act[2,2,,] <- UpdateNorm(CalcActSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+
+      emit_act[1,1,,] <- UpdateNorm(CalcActMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      emit_act[2,1,,] <- UpdateNorm(CalcActMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    }
     
-    
-    emit_act[1,1,,] <- UpdateNorm(CalcActMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-    emit_act[2,1,,] <- UpdateNorm(CalcActMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-    
+    if (incl_act & incl_light){
+      corr_mat[,1,] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      corr_mat[,2,] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      
+    }
 
   } else {
     lambda_mat_list <- CalcBinom(act,light,weights_array_list)
@@ -2294,7 +2622,6 @@ while(abs(like_diff) > stop_crit){
     emit_act[1,2,,] <- CalcSigmas(act,lod_act,weights_array_wake,emit_act[1,1,,])
     emit_act[2,2,,] <- CalcSigmas(act,lod_act,weights_array_sleep,emit_act[2,1,,])
     
-    
     emit_light[1,1,,] <- CalcMeans(light,lod_light,weights_array_wake)
     emit_light[2,1,,] <- CalcMeans(light,lod_light,weights_array_sleep)
     
@@ -2306,39 +2633,36 @@ while(abs(like_diff) > stop_crit){
   ##### Reorder #####
   #Reorder to avoid label switching
   #Cluster means go from small to large by activity
-  if (real_data){
-    reord_inds <- order(beta_vec)
-    reord_inds <- c(0,rev(order(beta_vec[-1])))+1
-    if (!all(reord_inds == c(1:mix_num))){
-      print("Swapping Labels")
-      emit_act <- emit_act[,,reord_inds,]
-      emit_light <- emit_light[,,reord_inds,]
-      nu_mat <- nu_mat[,reord_inds]
-      nu_mat <- nu_mat - nu_mat[,1]
-      params_tran_array <- params_tran_array[reord_inds,,]
-      # dim(params_tran_array) <- params_tran_array_dim
-      corr_mat <- corr_mat[reord_inds,,]
-      init <- init[reord_inds,]
-      beta_vec <- beta_vec[reord_inds]
-      beta_vec <- beta_vec-min(beta_vec)
-      # if(!real_data){mixture_mat <- mixture_mat[,reord_inds]}
-      
-      for (ind in 1:num_of_people){
-        alpha[[ind]] <- alpha[[ind]][,,reord_inds]
-        beta[[ind]] <- beta[[ind]][,,reord_inds]
-      }
-
-
-      pi_l <- CalcPi(nu_mat,nu_covar_mat)
-      re_prob <- CalcProbRE(alpha,pi_l)
-
-      bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
-      bline_vec <- bhaz_vec[[1]]
-      cbline_vec <- bhaz_vec[[2]]
-      
-      
-
+  reord_inds <- order(beta_vec)
+  # reord_inds <- c(0,rev(order(beta_vec[-1])))+1
+  if (!all(reord_inds == c(1:mix_num))){
+    print("Swapping Labels")
+    emit_act <- emit_act[,,reord_inds,]
+    emit_light <- emit_light[,,reord_inds,]
+    nu_mat <- nu_mat[,reord_inds]
+    nu_mat <- nu_mat - nu_mat[,1]
+    params_tran_array <- params_tran_array[reord_inds,,]
+    corr_mat <- corr_mat[reord_inds,,]
+    init <- init[reord_inds,]
+    beta_vec <- beta_vec[reord_inds]
+    beta_vec <- beta_vec-min(beta_vec)
+    
+    
+    for (ind in 1:num_of_people){
+      alpha[[ind]] <- alpha[[ind]][,,reord_inds]
+      beta[[ind]] <- beta[[ind]][,,reord_inds]
     }
+
+
+    pi_l <- CalcPi(nu_mat,nu_covar_mat)
+    re_prob <- CalcProbRE(alpha,pi_l)
+
+    bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+    bline_vec <- bhaz_vec[[1]]
+    cbline_vec <- bhaz_vec[[2]]
+    
+    
+
   }
 
   for (re_ind in 1:mix_num){
@@ -2381,42 +2705,45 @@ while(abs(like_diff) > stop_crit){
   
   alpha <- Forward(act = act,light = light,
                     init = init,tran_list = tran_list,
-                    emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-                    emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
+                    emit_act= emit_act,emit_light = emit_light,
                     lod_act = lod_act, lod_light = lod_light, 
                     corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
                     event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
-                    lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
+                    lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
                     age_vec = age_vec, vcovar_mat = vcovar_mat,
-                    lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat, tobit = tobit,incl_surv = incl_surv)
+                    lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat, tobit = tobit,incl_surv = incl_surv*beta_bool)
   
   beta <- Backward(act = act,light = light, tran_list = tran_list,
-                    emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-                    emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
+                    emit_act = emit_act,emit_light = emit_light,
                     lod_act = lod_act, lod_light =  lod_light, 
                     corr_mat = corr_mat,lintegral_mat = lintegral_mat,vcovar_mat = vcovar_mat,
                     lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit)
   
   
   new_likelihood <- CalcLikelihood(alpha,pi_l)
+  
+  if (incl_surv == 2 & beta_bool == 0){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
+  
   like_diff <- new_likelihood - likelihood
   
   if (like_diff < 0){
     print("Transition Likelihood Decrease")
 
     params_tran_array <- params_tran_array_old
+    tran_list <- GenTranList(params_tran_array,c(1:day_length),mix_num,vcovar_num)
+    
     alpha <- Forward(act = act,light = light,
                      init = init,tran_list = tran_list,
-                     emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-                     emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
+                     emit_act = emit_act,emit_light= emit_light,
                      lod_act = lod_act, lod_light = lod_light, 
                      corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
                      event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
-                     lintegral_mat = lintegral_mat,log_sweight = numeric(dim(act)[2]),
+                     lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
                      age_vec = age_vec, vcovar_mat = vcovar_mat,
                      lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat, tobit = tobit,incl_surv = incl_surv)
     
     new_likelihood <- CalcLikelihood(alpha,pi_l)
+    if (incl_surv == 2 & beta_bool == 0){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
     like_diff <- new_likelihood - likelihood
   }
   
@@ -2437,11 +2764,11 @@ while(abs(like_diff) > stop_crit){
   if (iter_count %% 10 == 0){
     
     tran_df <- ParamsArray2DF(params_tran_array)
-    
-    if (!real_data){
-      tran_df_true <- ParamsArray2DF(params_tran_array_true)
+    if (!real_data & !misspecification){
+      tran_df_true <- ParamsArray2DF(params_tran_array_true,misspecification)
+      tran_df_truth <- tran_df_true[,1]
       
-      tran_df <- tran_df %>% mutate(truth = tran_df_true[,1])
+      tran_df <- tran_df %>% mutate(truth = tran_df_truth)
       tran_df <- tran_df %>% mutate(resid = prob - truth)
     }
     
@@ -2449,46 +2776,114 @@ while(abs(like_diff) > stop_crit){
     true_params <- list(init_true,params_tran_array_true,
                         emit_act_true,emit_light_true,
                         corr_mat_true,nu_mat_true,
-                        beta_vec_true,beta_age_true,
-                        lambda_act_mat_true,lambda_light_mat_true)
+                        beta_vec_true,beta_age_true)
+                        #lambda_act_mat_true,lambda_light_mat_true)
     
     est_params <- list(init,params_tran_array,
                        emit_act,emit_light,
                        corr_mat,nu_mat,
-                       beta_vec,beta_age,
-                       tran_df,
-                       re_prob,
-                       new_likelihood,
-                       lambda_act_mat,lambda_light_mat)
+                       beta_vec,beta_age)
+                       # tran_df,
+                       # re_prob,
+                       # new_likelihood,
+                       #lambda_act_mat,lambda_light_mat,
+                       # beta_se)
     
-    bic <- CalcBIC(new_likelihood,mix_num,act,light)
-    to_save <- list(true_params,est_params,bic)
+    # bic <- CalcBIC(new_likelihood,mix_num,act,light)
+    to_save <- list(true_params,est_params)#,bic)
     
-    if (!leave_out){
-      save(to_save,file = paste0("Inter",model_name))
-    }
+    # save(to_save,file = paste0("Inter",model_name))
       
   }
 }
 
+if (incl_surv != 2){
+  beta_vec_long <- c(beta_age,beta_vec[-1])
+  beta_vec_long_se <- CalcBeta(beta_vec_long,incl_surv,stop_crit = .001)
+  beta_vec_long <- beta_vec_long_se[[1]]
+  beta_se <- beta_vec_long_se[[2]]
+  beta_age <- beta_vec_long[1]
+  beta_vec <- c(0,beta_vec_long[-1])
+  
+  bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+  bline_vec <- bhaz_vec[[1]]
+  cbline_vec <- bhaz_vec[[2]]
+  
+  ##### Reorder #####
+  #Reorder to avoid label switching
+  #Cluster means go from small to large by activity
+  reord_inds <- order(beta_vec)
+  # reord_inds <- c(0,rev(order(beta_vec[-1])))+1
+  if (!all(reord_inds == c(1:mix_num))){
+    print("Swapping Labels")
+    emit_act <- emit_act[,,reord_inds,]
+    emit_light <- emit_light[,,reord_inds,]
+    nu_mat <- nu_mat[,reord_inds]
+    nu_mat <- nu_mat - nu_mat[,1]
+    params_tran_array <- params_tran_array[reord_inds,,]
+    corr_mat <- corr_mat[reord_inds,,]
+    init <- init[reord_inds,]
+    beta_vec <- beta_vec[reord_inds]
+    beta_vec <- beta_vec-min(beta_vec)
 
-tran_df <- ParamsArray2DF(params_tran_array)
+    pi_l <- CalcPi(nu_mat,nu_covar_mat)
+    re_prob <- CalcProbRE(alpha,pi_l)
+    
+    bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+    bline_vec <- bhaz_vec[[1]]
+    cbline_vec <- bhaz_vec[[2]]
+    
+  }
+  
+  for (re_ind in 1:mix_num){
+    for (week_ind in 1:2){
+      if (emit_act[2,1,re_ind,week_ind] > emit_act[1,1,re_ind,week_ind]){
+        
+        if (week_ind == 1){
+          temp <- init[re_ind,1]
+          #NO WEEKEND INIT
+          #SWAPPING MAY SLIGHTLEY DECREASE LIKE?
+          init[re_ind,1] <- init[re_ind,2]
+          init[re_ind,2] <- temp
+        }
+        
+        temp <- emit_act[1,,re_ind,week_ind]
+        emit_act[1,,re_ind,week_ind] <- emit_act[2,,re_ind,week_ind]
+        emit_act[2,,re_ind,week_ind] <- temp
+        
+        temp <- emit_light[1,,re_ind,week_ind]
+        emit_light[1,,re_ind,week_ind] <- emit_light[2,,re_ind,week_ind]
+        emit_light[2,,re_ind,week_ind] <- temp
+        
+        temp <- params_tran_array[re_ind,1:3,week_ind]
+        params_tran_array[re_ind,1:3,week_ind] <- params_tran_array[re_ind,4:6,week_ind]
+        params_tran_array[re_ind,4:6,week_ind] <- temp
+        
+        temp <- corr_mat[re_ind,1,week_ind]
+        corr_mat[re_ind,1,week_ind] <- corr_mat[re_ind,2,week_ind]
+        corr_mat[re_ind,2,week_ind] <- temp
+      }
+    }
+  }
+}
+
+
+
 
 if(!leave_out){
-  decoded_mat <- Viterbi()
+  decoded_mat <- Viterbi(act,light,vcovar_mat)
 } else {
   decoded_mat <- matrix(NA,2,2)
 }
 
-
-
-if (!real_data){
-  tran_df_true <- ParamsArray2DF(params_tran_array_true)
-
-  tran_df <- tran_df %>% mutate(truth = tran_df_true[,1])
+tran_df <- ParamsArray2DF(params_tran_array)
+if (!real_data & !misspecification){
+  tran_df_true <- ParamsArray2DF(params_tran_array_true,misspecification)
+  tran_df_truth <- tran_df_true[,1]
+  
+  tran_df <- tran_df %>% mutate(truth = tran_df_truth)
   tran_df <- tran_df %>% mutate(resid = prob - truth)
 }
-
 
 true_params <- list(init_true,params_tran_array_true,
                     emit_act_true,emit_light_true,
@@ -2505,7 +2900,8 @@ est_params <- list(init,params_tran_array,
                    new_likelihood,
                    decoded_mat,
                    lambda_act_mat,lambda_light_mat,
-                   bline_vec,cbline_vec)
+                   bline_vec,cbline_vec,
+                   beta_se)
 
 # init <- to_save[[2]][[1]]
 # params_tran_array <- to_save[[2]][[2]]
@@ -2526,175 +2922,179 @@ if (leave_out){
   new_age_vec <- age_vec_old[leave_out_inds]
   new_pi_l <- CalcPi(nu_mat,nu_covar_mat_old[leave_out_inds,])
 
-  new_surv_event <- surv_event_old[leave_out_inds]
-  new_surv_time <- surv_time_old[leave_out_inds]
+  surv_event_new <- surv_event_old[leave_out_inds]
+  surv_time_new <- surv_time_old[leave_out_inds]
+  
+  log_sweights_vec_new <- log_sweights_vec_old[leave_out_inds]
 
 
-
-  re_prob_new_list <- list()
-  mix_assignment_pred_list <- list()
-  conf_mat_list <- list()
-
-  for (samp_day_len in c(1:9)){
-    re_prob_new_list_list <- list()
-    mix_assignment_pred_list_list <- list()
-    conf_mat <- matrix(0,mix_num,mix_num)
-    for(samp_day in 0:(8-samp_day_len+1)){
-      new_act_samp <- matrix(NA,samp_day_len*96,dim(new_act)[2])
-      new_light_samp <- matrix(NA,samp_day_len*96,dim(new_light)[2])
-      new_vcovar_mat_samp <- matrix(NA,samp_day_len*96,dim(new_vcovar_mat)[2])
-
-      samp_day_start <- samp_day*96 + 1
-      samp_day_end <-  samp_day*96 + samp_day_len*96
-
-      for (ind in 1:dim(new_act)[2]){
-        new_act_samp[,ind] <- new_act[c(samp_day_start:samp_day_end),ind]
-        new_light_samp[,ind] <- new_light[c(samp_day_start:samp_day_end),ind]
-        new_vcovar_mat_samp[,ind] <- new_vcovar_mat[c(samp_day_start:samp_day_end),ind]
-      }
-
-
-      alpha <- Forward(act = new_act_samp,light = new_light_samp,
-                        init = init,tran_list = tran_list,
-                        emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
-                        emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
-                        lod_act = lod_act, lod_light = lod_light,
-                        corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
-                        event_vec = numeric(100), bline_vec = numeric(100), cbline_vec = numeric(100),
-                        lintegral_mat = lintegral_mat,log_sweight = numeric(dim(new_act_samp)[2]),
-                        age_vec = new_age_vec, vcovar_mat = new_vcovar_mat_samp,
-                        lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,
-                        tobit = T,incl_surv = F)
-
-      re_prob_new <- CalcProbRE(alpha,new_pi_l)
-      mix_assignment_pred <- apply(re_prob_new,1,which.max)
-
-      re_prob_new_list_list[[samp_day+1]] <- re_prob_new
-      mix_assignment_pred_list_list[[samp_day+1]] <- mix_assignment_pred
-
-      #need to include all mixtures
-      #add perf pred
-      mix_assignment_pred <- c(mix_assignment_pred,c(1:mix_num))
-      mix_assignment_true_ind <- c(mix_assignment_true[leave_out_inds],c(1:mix_num))
-
-      conf_mat_ind <- table(mix_assignment_pred,mix_assignment_true_ind)
-      #remove added perf pred
-      diag(conf_mat_ind) <- diag(conf_mat_ind) - 1
-
-      conf_mat <- conf_mat + conf_mat_ind
-    }
-
-    re_prob_new_list[[samp_day_len]] <- re_prob_new_list_list
-    mix_assignment_pred_list[[samp_day_len]] <- mix_assignment_pred_list_list
-    conf_mat_list[[samp_day_len]] <- conf_mat
+  
+  empty_list <- vector(mode = "list", length = 9)
+  for (i in 1:9){
+    # empty_list[[i]] <- vector(mode = "list", length = 9+1-i)
+    empty_list[[i]] <- list()
   }
+  
+  empty_mat_list <- vector(mode = "list", length = 9)
+  for (i in 1:9){
+    # empty_list[[i]] <- vector(mode = "list", length = 9+1-i)
+    empty_mat_list[[i]] <- matrix(0,mix_num,mix_num)
+  }
+  
+  empty_vec_list <- vector(mode = "list", length = 9)
+  
+  
+  re_prob_new_list <- empty_list
+  mix_assignment_pred_list <- empty_list
+  conf_mat_list <- empty_mat_list
+  cindex_new_list <- empty_vec_list
+  ibs_new_list <- empty_vec_list
+  
+  inclexcl_mat <- as.matrix(expand.grid(replicate(9, 0:1, simplify = FALSE),stringsAsFactors = FALSE))
+  inclexcl_mat <- inclexcl_mat[-1,]
+  
+  days_incl_vec <- rowSums(inclexcl_mat)
 
-  leave_out_to_save <- list(leave_out_inds,re_prob_new_list,mix_assignment_pred_list,conf_mat_list)
+  for (inclexcl_ind in 1:dim(inclexcl_mat)[1]){
+    
+    days_incl <- days_incl_vec[inclexcl_ind]
+    
+    inclexcl_vec <- rep(inclexcl_mat[inclexcl_ind,],each=96)
+    inclexcl_ind_mat <- replicate(num_of_people,inclexcl_vec)
+    
+    
+    new_act_working <- new_act
+    new_light_working <- new_light
+    # new_vcovar_mat_working <- new_vcovar_mat
+    
+    new_act_working[inclexcl_ind_mat == 0] <- NA
+    new_light_working[inclexcl_ind_mat == 0] <- NA
+    # new_vcovar_mat_working[inclexcl_ind_mat == 0] <- NA
+    
+    
+    
+    if (wake_sleep){
+      
+      decoded_mat <- Viterbi(new_act_working,new_light_working,new_vcovar_mat)
+      alpha <- ForwardAltC(decoded_mat,init,tran_list,new_vcovar_mat)
+      
+    } else {
+      
+      alpha <- Forward(act = new_act_working,light = new_light_working,
+                       init = init,tran_list = tran_list,
+                       emit_act = emit_act,emit_light = emit_light,
+                       lod_act = lod_act, lod_light = lod_light,
+                       corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+                       event_vec = numeric(100), bline_vec = numeric(100), cbline_vec = numeric(100),
+                       lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec_new,
+                       age_vec = new_age_vec, vcovar_mat = new_vcovar_mat,
+                       lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,
+                       tobit = T,incl_surv = 0)
+    }
+    
+    
+    re_prob_new <- CalcProbRE(alpha,new_pi_l)
+    mix_assignment_pred <- apply(re_prob_new,1,which.max)
+    
+    mix_assignment_pred <- c(mix_assignment_pred,c(1:mix_num))
+    mix_assignment_true_ind <- c(mix_assignment_true[leave_out_inds],c(1:mix_num))
+    conf_mat_ind <- table(mix_assignment_pred,mix_assignment_true_ind)
+    diag(conf_mat_ind) <- diag(conf_mat_ind) - 1
+    
+    cindex <- CalcCindex(surv_time_new,surv_event_new,beta_vec,beta_age,re_prob_new,new_age_vec)
+    ibs <- CalcIBS(surv_time_new,surv_event_new,cbline_vec,beta_vec,beta_age,new_age_vec,re_prob_new,incl_surv,mix_assignment_pred)
+    
+    
+    re_prob_new_list[[days_incl]] <- append(re_prob_new_list[[days_incl]],list(re_prob_new))
+    mix_assignment_pred_list[[days_incl]] <- append(mix_assignment_pred_list[[days_incl]],list(mix_assignment_pred))
+    conf_mat_list[[days_incl]] <- conf_mat_list[[days_incl]] + conf_mat_ind
+    cindex_new_list[[days_incl]] <- c(cindex_new_list[[days_incl]],cindex)
+    ibs_new_list[[days_incl]] <- c(ibs_new_list[[days_incl]],ibs)
+
+    
+  }
+  
+  # leave_out_list <- list(leave_out_inds,re_prob_new_list,mix_assignment_pred_list,conf_mat_list,cindex_new_list,ibs_new_list)
+  leave_out_list <- list(leave_out_inds,conf_mat_list,cindex_new_list,ibs_new_list)
+      
+  #Only weekend data
+  new_act_weekend <- new_act
+  new_light_weekend <- new_light
+  
+  new_act_weekend[new_vcovar_mat == 0] <- NA
+  new_light_weekend[new_vcovar_mat == 0] <- NA
+  
+  
+  alpha <- Forward(act = new_act_weekend,light = new_light_weekend,
+                   init = init,tran_list = tran_list,
+                   emit_act = emit_act,emit_light = emit_light,
+                   lod_act = lod_act, lod_light = lod_light,
+                   corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+                   event_vec = numeric(100), bline_vec = numeric(100), cbline_vec = numeric(100),
+                   lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec_new,
+                   age_vec = new_age_vec, vcovar_mat = new_vcovar_mat,
+                   lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,
+                   tobit = T,incl_surv = 0)
+  
+  re_prob_new <- CalcProbRE(alpha,new_pi_l)
+  mix_assignment_pred <- apply(re_prob_new,1,which.max)
+  
+  conf_mat <- table(c(mix_assignment_pred,c(1:mix_num)),
+                        c(mix_assignment_true[leave_out_inds],c(1:mix_num)))
+  diag(conf_mat) <- diag(conf_mat) - 1
+  
+  
+  cindex <- CalcCindex(surv_time_new,surv_event_new,beta_vec,beta_age,re_prob_new,new_age_vec)
+  ibs <- CalcIBS(surv_time_new,surv_event_new,cbline_vec,beta_vec,beta_age,new_age_vec,re_prob_new,incl_surv,mix_assignment_pred)
+   
+  
+  # leave_out_weekend_list <- list(leave_out_inds,re_prob_new,mix_assignment_pred,conf_mat,cindex,ibs)
+  leave_out_weekend_list <- list(leave_out_inds,conf_mat,cindex,ibs)
+  leave_out_to_save <- list(leave_out_list,leave_out_weekend_list)
 } else {
   leave_out_to_save <- list()
 }
 
-if (real_data){
+if (real_data | save_space){
   simulated_hmm <- list()
 }
 
 
 
 mix_assignment <- apply(re_prob,1,which.max)
-tab <- table(c(mixture_mat,c(1:mix_num)),c(mix_assignment,c(1:mix_num)))
-diag(tab) <- diag(tab) - 1
-
-surv_data <- data.frame(time = surv_time,
-                        status = surv_event)
-
-
-# km_fit <- survfit(Surv(surv_time, 1-surv_event) ~ 1)
-# cens_dist <- c(1,summary(km_fit)$surv)
-# cens_dist_time <- c(0,summary(km_fit)$time)
-# G <- stepfun(km_fit$time, c(1, km_fit$surv))
-
-# event_time <- unique(sort(surv_time[surv_event==1]))
-# cbline_vec_new <- unique(sort(cbline_vec[surv_event == 1]))
-event_time <- unique(sort(surv_time))
-cbline_vec_new <- unique(sort(cbline_vec))
-# cbline_vec_new <- basehaz(cox1,centered = F)[,1]
-
-surv_mat_ind <- CalcS(event_time,cbline_vec_new,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment)
-
-
-
-IBS_times <- sort(unique(surv_time))
-# IBS_times <- sort(surv_time)
-# Calculate the IBS, again including the observed event times, censoring
-# variables, and the prediction timepoints corresponding to each row of the
-# survival prob matrix
-
-# bs <- brier_score(y_true = Surv(surv_data$time, surv_data$status), 
-#             surv = t(surv_mat_ind), 
-#             times = IBS_times)
-
-ibs <- integrated_brier_score(y_true = Surv(surv_data$time, surv_data$status), 
-                       surv = t(surv_mat_ind), 
-                       times = IBS_times)
-
-# bs <- brier_score(y_true = Surv(surv_data$time, surv_data$status), 
-#             surv = pred_surv)
-
-
-#METHOD 1
-
-denom <- 0
-num <- 0
-
-for (j in 1:length(surv_time)){
+if (!real_data){
+  tab <- table(c(mixture_mat,c(1:mix_num)),c(mix_assignment,c(1:mix_num)))
+  diag(tab) <- diag(tab) - 1
+} else {
+  tab <- table(c(mix_assignment,c(1:mix_num)),c(mix_assignment,c(1:mix_num)))
+  diag(tab) <- diag(tab) - 1
+}
   
-  
-  for (i in 1:length(surv_time)){
-    if (surv_event[j] == 1){
-      if (i != j){
-        
-        if (incl_surv){
-          risk_i <- (re_prob[i,] %*% beta_vec)+(beta_age * age_vec[i])
-          risk_j <- (re_prob[j,] %*% beta_vec)+(beta_age * age_vec[j])
-        } else {
-          risk_i <- (beta_vec[which.max(re_prob[i,]) ])+(beta_age * age_vec[i])
-          risk_j <- (beta_vec[which.max(re_prob[j,]) ])+(beta_age * age_vec[j])
-        }
-        
-        
-        if (surv_time[i] > surv_time[j]){
-          denom <- denom + 1
-          
-          if (risk_j > risk_i){
-            num <- num + 1
-          }
-          
-        }
-        
-        
-      }
-    }
-    
-  }
+if (save_space){
+  # est_params[[10]] <- 0
+  est_params[[12]] <- 0
+  est_params[[15]] <- 0
+  est_params[[16]] <- 0
 }
 
-cindex <- num/denom
-
-
-
-
+ibs <- CalcIBS(surv_time,surv_event,cbline_vec,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment)
+cindex <- CalcCindex(surv_time,surv_event,beta_vec,beta_age,re_prob,age_vec)
 diagnostics <- list(cindex,ibs,tab)
-
-
 
 bic <- CalcBIC(new_likelihood,mix_num,act,light)
 to_save <- list(true_params,est_params,bic,leave_out_to_save,simulated_hmm,diagnostics)
+# model_name <- paste0("2",model_name)
 save(to_save,file = model_name)
 
 
 
 
-
-
-
-
+# surv_data <- data.frame(time = surv_time,
+#                         status = surv_event,
+#                         age = age_vec)
+# 
+# 
+# fit <- coxph(Surv(time, status) ~ age, data = surv_data)
+# beta_age <- fit$coefficients
+# ibs <- CalcIBS(surv_time,surv_event,cbline_vec,numeric(mix_num),beta_age,age_vec,re_prob,incl_surv,mix_assignment)
+# cindex <- CalcCindex(surv_time,surv_event,numeric(mix_num),beta_age,re_prob,incl_surv)

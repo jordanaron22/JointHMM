@@ -491,30 +491,21 @@ mat CalcTranHelperC(int init_state, int new_state, NumericMatrix act, NumericMat
   return tran_vals_re_mat;
 }
 	 
-/* 
 // [[Rcpp::export]]
-mat ForwardIndAltC(const NumericVector& decoded_ind, NumericVector init, Rcpp::List tran_list, int clust_i, vec beta_vec, double beta_age, double age, int event, double bline, double cbline, vec vcovar_vec){
+mat ForwardIndAltC(mat decoded_mat, rowvec init, Rcpp::List tran_list, int clust_i, vec vcovar_vec){
   
-  mat alpha( decoded_ind.length(), 2 );
- 
-  double surv_comp;
- 
+  vec decoded_ind = decoded_mat.col(clust_i);
+  mat alpha( decoded_ind.n_elem, 2 );
   
-  if (event == 1){
-    surv_comp = log(bline) + beta_vec[clust_i]+(beta_age * age) - (cbline * exp(beta_vec[clust_i]+(beta_age * age)));
-  } else {
-    surv_comp =  -cbline * exp(beta_vec[clust_i]+(beta_age * age));
-  }
-  
-  alpha(0,0) = log(init(0)) + surv_comp;
-  alpha(0,1) = log(init(1)) + surv_comp;
+  alpha(0,0) = log(init(0));
+  alpha(0,1) = log(init(1));
   
   List tran_list_clust = tran_list[clust_i]; 
   
   double log_class_0;
   double log_class_1;
   
-  for (int i = 1; i < decoded_ind.length(); i++) {
+  for (int i = 1; i < decoded_ind.n_elem; i++) {
     List tran_list_vcovar = tran_list_clust[vcovar_vec(i)];
     
     NumericMatrix tran = tran_list_vcovar[i%96];
@@ -551,16 +542,18 @@ mat ForwardIndAltC(const NumericVector& decoded_ind, NumericVector init, Rcpp::L
   return(alpha);
 }
 
+
 // [[Rcpp::export]]
-List ForwardAltC(const NumericMatrix& decoded_mat, NumericMatrix init, List tran_list, vec beta_vec, double beta_age, vec event_vec, vec bline_vec, vec cbline_vec, vec age_vec, mat vcovar_mat){
-  int num_people = decoded_mat.ncol();
-  int len = decoded_mat.nrow();
-  int num_re = init.nrow();
+List ForwardAltC(cube decoded_cube, mat init, List tran_list, mat vcovar_mat){
+  int num_people = decoded_cube.n_cols;
+  int len = decoded_cube.n_rows;
+  int num_re = decoded_cube.n_slices;
   List alpha_list(num_people);
   
   
   for (int ind = 0; ind < num_people; ind++) {
-    int age_ind = age_vec(ind);
+    
+    mat decoded_mat = decoded_cube.col(ind);
     
     arma::cube Cube1(len, 2, num_re);
     
@@ -568,9 +561,9 @@ List ForwardAltC(const NumericMatrix& decoded_mat, NumericMatrix init, List tran
     
     for (int clust_i = 0; clust_i < num_re; clust_i++){
       
-      NumericVector init_vec = init.row(clust_i);
-      NumericVector decoded_ind = decoded_mat.column(ind);
-      Cube1.slice(clust_i) = ForwardIndAltC(decoded_ind, init_vec, tran_list, clust_i, beta_vec, beta_age,age_ind,event_vec[ind], bline_vec[ind], cbline_vec[ind], vcovar_vec);
+      arma::rowvec init_vec = init.row(clust_i);
+      
+      Cube1.slice(clust_i) = ForwardIndAltC(decoded_mat, init_vec, tran_list, clust_i, vcovar_vec);
       
     }
     
@@ -578,7 +571,8 @@ List ForwardAltC(const NumericMatrix& decoded_mat, NumericMatrix init, List tran
   }
   return(alpha_list);
 }
-*/
+ 
+
 
 
 
