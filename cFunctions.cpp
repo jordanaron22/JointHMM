@@ -185,8 +185,7 @@ double logSumExpC(const arma::vec& x) {
 // [[Rcpp::export]]
 mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, NumericVector init, Rcpp::List tran_list, 
                 cube emit_act_week, cube emit_light_week,  cube emit_act_weekend, cube emit_light_weekend, 
-                int clust_i, double lod_act, double lod_light, cube corr_vec, vec beta_vec, double beta_age, 
-                double age, int event, double bline, double cbline, cube lintegral_mat, double log_sweight, vec vcovar_vec,
+                int clust_i, double lod_act, double lod_light, cube corr_vec, vec beta_vec, double covar_risk, int event, double bline, double cbline, cube lintegral_mat, double log_sweight, vec vcovar_vec,
                 cube lambda_act_mat, cube lambda_light_mat, bool tobit, bool incl_surv){
 
 	mat alpha( act_ind.length(), 2 );
@@ -231,9 +230,9 @@ mat ForwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, Nu
 
 	if (incl_surv){
 	  if (event == 1){
-	    surv_comp = log(bline) + beta_vec[clust_i]+(beta_age * age) - (cbline * exp(beta_vec[clust_i]+(beta_age * age)));
+	    surv_comp = log(bline) + beta_vec[clust_i]+covar_risk - (cbline * exp(beta_vec[clust_i]+(covar_risk)));
 	  } else {
-	    surv_comp =  -cbline * exp(beta_vec[clust_i]+(beta_age * age));
+	    surv_comp =  -cbline * exp(beta_vec[clust_i]+covar_risk);
 	  }
 	}
   	
@@ -345,6 +344,7 @@ mat BackwardIndC(const NumericVector& act_ind, const NumericVector& light_ind, R
 
 }
 
+/*
 // [[Rcpp::export]]
 List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatrix init, List tran_list, 
               cube emit_act_week, cube emit_light_week, cube emit_act_weekend, cube emit_light_weekend, 
@@ -381,6 +381,7 @@ List ForwardC(const NumericMatrix& act, const NumericMatrix& light, NumericMatri
 	}
 	return(alpha_list);
 }
+*/
 
 // [[Rcpp::export]]
 List BackwardC(const NumericMatrix& act, const NumericMatrix& light, List tran_list, 

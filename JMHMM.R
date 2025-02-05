@@ -13,23 +13,23 @@ library(Hmisc)
 library(survex)
 library(tidyverse)
 
-beta_bool <- 0
+beta_bool <- 1
 real_data <- 0
-# sim_size <- 1
-randomize_init <- 1
+sim_size <- 0
+randomize_init <- 0
 set_seed <- 1
 tobit <- 1
 leave_out <- 0
 # incl_surv <- 2
 incl_light <- 1
 incl_act <- 1
-load_data <- 1
+load_data <- 0
 check_tran <- 0
 wake_sleep <- 0
 weekend_only <- 0
 misspecification <- 0
 save_space <- 0
-single_day <- 0
+single_day <- 1
 
 
 epsilon <- 1e-3
@@ -40,7 +40,7 @@ vcovar_num <- 2
 sim_num <- as.numeric(Sys.getenv('SLURM_ARRAY_TASK_ID'))
 print(paste("Seed",sim_num))
 
-if (is.na(sim_num)){sim_num <- 6}
+if (is.na(sim_num)){sim_num <- 1}
 if (set_seed){set.seed(sim_num)}
 
 print("Command line arguments:")
@@ -59,8 +59,8 @@ print(paste("Include Surv",incl_surv))
 # real_data <- command_args[3]
 # print(paste("Real Data",real_data))
 
-sim_size <- command_args[3]
-print(paste("Single day",sim_size))
+# sim_size <- command_args[3]
+# print(paste("Single day",sim_size))
 # 
 # misspecification <- command_args[2]
 # print(paste("misspecification",misspecification))
@@ -75,7 +75,7 @@ print(paste("Single day",sim_size))
 if(is.na(mix_num)){mix_num <- 4}
 if(is.na(incl_surv)){incl_surv <- 2}
 # if(is.na(real_data)){real_data <- 1}
-if(is.na(sim_size)){sim_size <- 0}
+# if(is.na(sim_size)){sim_size <- 0}
 # if(is.na(misspecification)){misspecification <- 0}
 # if(is.na(load_data)){load_data <- 0}
 
@@ -278,7 +278,7 @@ finv <- function(lam,time, randu, xb_ind){
   return((1-pexp(time,rate = lam))^(exp(xb_ind)) - randu)
 }
 
-SimSurvival <- function(mixture_vec,beta_vec,beta_age,age_vec,lam = 1/20){
+SimSurvival <- function(mixture_vec,beta_vec,beta_age_true,beta_covar_sim,age_vec,surv_covar_sim,lam = 1/20){
   
   num_of_people <- length(mixture_vec)
   
@@ -286,7 +286,7 @@ SimSurvival <- function(mixture_vec,beta_vec,beta_age,age_vec,lam = 1/20){
   censor_times <- numeric(num_of_people)
   
   for(i in 1:num_of_people){
-    xb <- beta_vec[mixture_vec[i]] + beta_age*age_vec[i]
+    xb <- beta_vec[mixture_vec[i]] + beta_age_true*age_vec[i] + beta_covar_sim[surv_covar_sim[i]]
     
     evnt<-runif(1)
     cens<-runif(1)
@@ -353,13 +353,16 @@ GenTranList <- function(params_tran_array,time_vec,mix_num,vcovar_num){
 
 SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,
                         emit_act,emit_light,corr_mat,
-                        lod_act,lod_light, nu_mat,beta_vec_true,beta_age_true,
+                        lod_act,lod_light, nu_mat,beta_vec_true,beta_age_true,beta_covar_sim,
                         missing_perc,lambda_act_mat,lambda_light_mat,
                         misspecification){
   
   mix_num <- dim(emit_act)[3]
   
   age_vec <- floor(runif(num_of_people,10,81))
+  surv_covar_sim_wide <- t(rmultinom(num_of_people,1,c(1/3,1/3,1/3)))
+  surv_covar_sim <- apply(surv_covar_sim_wide, 1, which.max)
+  
   statact_vec <- floor(runif(num_of_people,0,16))
   modact_vec <- rbinom(num_of_people,1,.5)
   # nu_covar_mat <- cbind(age_vec/10,(age_vec/10)^2,statact_vec,statact_vec^2,modact_vec)
@@ -495,14 +498,14 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,
   #   pi_l_emp[re_ind] <- sum(mixture_indicator)/num_of_people
   # }
   
-  surv_list <- SimSurvival(mixture_vec,beta_vec_true,beta_age_true,age_vec)
-  if (misspecification == 1 | all(mixture_vec== 1) ){
-    cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec)
-  } else {
-    cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec + as.factor(mixture_vec))
-  }
-  
-  beta_vec_long_emp <- as.vector(as.vector(cox_mod$coefficients))
+  surv_list <- SimSurvival(mixture_vec,beta_vec_true,beta_age_true,beta_covar_sim,age_vec,surv_covar_sim)
+  # if (misspecification == 1 | all(mixture_vec== 1) ){
+  #   cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec)
+  # } else {
+  #   cox_mod <- coxph(Surv(surv_list[[1]], surv_list[[2]]) ~age_vec + as.factor(mixture_vec))
+  # }
+  # 
+  # beta_vec_long_emp <- as.vector(as.vector(cox_mod$coefficients))
   
   
   # 
@@ -543,7 +546,7 @@ SimulateHMM <- function(day_length,num_of_people,init,params_tran_array,
 
   
   return(list(hidden_states_matrix,activity_matrix,light_matrix,mixture_vec,
-              age_vec,nu_covar_mat,vcovar_mat,surv_list))
+              age_vec,nu_covar_mat,vcovar_mat,surv_list,surv_covar_sim_wide))
 }
 
 CondMarginalize <- function(alpha,beta,pi_l){
@@ -843,10 +846,10 @@ LM <- function(grad_array,hess_array,params_tran_array,check_tran,likelihood,pi_
                      emit_act_week = emit_act[,,,1],emit_light_week = emit_light[,,,1],
                      emit_act_weekend = emit_act[,,,2],emit_light_weekend = emit_light[,,,2],
                      lod_act = lod_act, lod_light = lod_light, 
-                     corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+                     corr_mat = corr_mat, beta_vec = beta_vec, surv_coef = surv_coef,
                      event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
                      lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
-                     age_vec = age_vec, vcovar_mat = vcovar_mat,
+                     surv_covar = surv_covar, vcovar_mat = vcovar_mat,
                      lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit,incl_surv = incl_surv*beta_bool)
     new_like <- CalcLikelihood(alpha,pi_l)
     
@@ -1086,7 +1089,27 @@ CalcBIC <- function(new_likelihood,mix_num,act,light){
   return(bic)
 }
 
-CalcBLHaz <- function(beta_age,beta_vec, re_prob,surv_event,surv_time,age_vec){
+SurvCovarRiskScore <- function(surv_coef,surv_covar,set){
+  risk_score <- 0
+  if (length(set) < 2){
+    if (set == 0){set <- c(1:num_of_people)}
+  }
+  
+  
+  for (i in 1:length(surv_coef)){
+    
+    if (length(surv_coef[[i]]) == 1){
+      risk_score <- risk_score + surv_coef[[i]] * surv_covar[[i]][set]
+    } else {
+      risk_score <- risk_score + surv_covar[[i]][set,]%*%surv_coef[[i]] 
+    }
+    
+      
+  }
+  return(risk_score)
+}
+
+CalcBLHaz <- function(surv_coef,beta_vec, re_prob,surv_event,surv_time,surv_covar){
   n <- length(surv_event)
   bline_vec <- numeric(n)
   cbline_vec <- numeric(n)
@@ -1095,9 +1118,9 @@ CalcBLHaz <- function(beta_age,beta_vec, re_prob,surv_event,surv_time,age_vec){
     risk_set <- surv_time >= surv_time[time_ind]
     
     if (dim(re_prob)[2] != 1){
-      denom <- sum((re_prob[risk_set,] %*% exp(beta_vec)) * exp(beta_age * age_vec[risk_set]))
+      denom <- sum((re_prob[risk_set,] %*% exp(beta_vec)) * exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set)))
     } else {
-      denom <- sum(exp(beta_age * age_vec[risk_set]))
+      denom <- sum(exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set)))
     }
       
     if (denom > .Machine$double.xmax){denom <- .Machine$double.xmax}
@@ -1112,22 +1135,32 @@ CalcBLHaz <- function(beta_age,beta_vec, re_prob,surv_event,surv_time,age_vec){
   return(list(bline_vec,cbline_vec))
 }
 
-SurvLike <- function(beta_vec_long){
-  beta_age <- beta_vec_long[1]
-  beta_vec <- beta_vec_long[-1]
-  
-  beta_vec <- c(0,beta_vec)
-  
-  
-  
-  bhaz_vec <<- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+SurvLike <- function(beta_vec,surv_coef){
+  bhaz_vec <<- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
   bline_vec <<- bhaz_vec[[1]]
   cbline_vec <<- bhaz_vec[[2]]
   
   
   loglike <- sum(log(bline_vec^surv_event) + 
-                   ((re_prob %*% beta_vec)+(beta_age * age_vec)) * surv_event - 
-                   cbline_vec*exp((re_prob %*% beta_vec)+(beta_age * age_vec)))
+                   ((re_prob %*% beta_vec)+SurvCovarRiskScore(surv_coef,surv_covar,0)) * surv_event - 
+                   cbline_vec*exp((re_prob %*% beta_vec)+SurvCovarRiskScore(surv_coef,surv_covar,0)))
+  
+  return(-loglike)
+}
+
+SurvLikeGrad <- function(beta_vec_surv_coef){
+  
+  beta_vec <- c(0,beta_vec_surv_coef[1:3])
+  surv_coef <- list(beta_vec_surv_coef[4],c(0,beta_vec_surv_coef[5:8]))
+  
+  bhaz_vec <<- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
+  bline_vec <<- bhaz_vec[[1]]
+  cbline_vec <<- bhaz_vec[[2]]
+  
+  
+  loglike <- sum(log(bline_vec^surv_event) + 
+                   ((re_prob %*% beta_vec)+SurvCovarRiskScore(surv_coef,surv_covar,0)) * surv_event - 
+                   cbline_vec*exp((re_prob %*% beta_vec)+SurvCovarRiskScore(surv_coef,surv_covar,0)))
   
   return(-loglike)
 }
@@ -1135,8 +1168,9 @@ SurvLike <- function(beta_vec_long){
 
 CalcBetaHelper <- function(beta_vec_long){
   
-  gradient <- grad(SurvLike, beta_vec_long)
-  hessian <- hessian(SurvLike, beta_vec_long)
+  #NEED TO REDO THIS IF USING
+  # gradient <- grad(SurvLike, beta_vec_long)
+  # hessian <- hessian(SurvLike, beta_vec_long)
   
   nr_fact <- SolveCatch(hessian,gradient)
   step_size <- 1
@@ -1152,53 +1186,104 @@ CalcBetaHelper <- function(beta_vec_long){
   return(beta_vec_long)
 }
 
-CalcBetaManual <- function(beta_vec_long,stop_crit){
+# beta_surv_coef <- c(surv_coef[[1]],beta_vec[-1],surv_coef[[2]][-1])
+# beta_surv_coef <- c(surv_coef[[1]],beta_vec[-1],0,0)
+CalcBetaManual <- function(beta_surv_coef,stop_crit){
   l2norm <- 2
   while (l2norm > stop_crit){
 
-    old_slike <- SurvLike(beta_vec_long)
+    
+    beta_vec <- c(0,beta_surv_coef[2:4])
+    # surv_coef <- list(beta_surv_coef[1],c(0,beta_surv_coef[5:6]))
+    surv_coef <- list(beta_surv_coef[1],c(0,beta_surv_coef[5:6]))
+    old_slike <- SurvLike(beta_vec,surv_coef)
     slike_diff <- -1
 
-    beta_age <- beta_vec_long[1]
-    beta_vec <- beta_vec_long[-1]
-    beta_vec <- c(0,beta_vec)
 
-    grad <- numeric(mix_num)
-    hess <- matrix(0,mix_num,mix_num)
+    grad <- numeric(mix_num + length(unlist(surv_coef)) - length(surv_coef))
+    hess <- matrix(0,mix_num + length(unlist(surv_coef)) - length(surv_coef),mix_num + length(unlist(surv_coef)) - length(surv_coef))
 
     for (ind in which(surv_event == 1)){
 
       risk_set <- surv_time >= surv_time[ind]
-      ageadj_risk <- exp(beta_age*age_vec[risk_set]) %x% t(exp(beta_vec))
+      
+      
+      ageadj_risk <- exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set)) %x% t(exp(beta_vec))
+      
+      num_list <- list()
+      
+      #First survival covariate must be age
+      #Age is only continuous surv covar so its treated differently
+      num0 <- sum(re_prob[risk_set,] * ageadj_risk * surv_covar[[1]][risk_set] %x% t(numeric(mix_num)+1))
+      num02 <- sum(re_prob[risk_set,] * ageadj_risk * surv_covar[[1]][risk_set]^2 %x% t(numeric(mix_num)+1))
+      num_list[[1]] <- c(num0,num02)
+      
+      if (length(surv_covar) > 1){
+        
+        for (surv_covar_ind in 2:length(surv_covar)){
+          
+          #need to only include people with same covariate status in numerator
+          #num0 and num02 will be equal, need to adjust accordingly
+          
+          num_disc_covar_vec <- c()
+          
+          for (surv_covar_indicator in 1:length(surv_coef[[surv_covar_ind]])){
+            
+            num_disc_covar <- sum(re_prob[risk_set,] * ageadj_risk * 
+                                    surv_covar[[surv_covar_ind]][risk_set,surv_covar_indicator] %x% t(numeric(mix_num)+1))
+            
+            num_disc_covar_vec <- c(num_disc_covar_vec,num_disc_covar)
+            num_list[[surv_covar_ind]] <- num_disc_covar_vec
+          }
 
-      num0 <- sum(re_prob[risk_set,] * ageadj_risk * age_vec[risk_set] %x% t(numeric(mix_num)+1))
-      num02 <- sum(re_prob[risk_set,] * ageadj_risk * age_vec[risk_set]^2 %x% t(numeric(mix_num)+1))
-
-      for (beta_ind in 1:mix_num){
-
-        denom <- sum(re_prob[risk_set,] * ageadj_risk)
-        num_cross <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(beta_age*age_vec[risk_set])* age_vec[risk_set])
-
-
-        if (beta_ind ==1){
-
-
-          grad[beta_ind] <- grad[beta_ind] + (age_vec[ind] - num0/denom)
-          # hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (denom*num02-num0^2)/denom^2
-          hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (num02/denom) - (num0/denom)^2
-        } else {
-
-          num <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(beta_age*age_vec[risk_set]))
-
-          grad[beta_ind] <- grad[beta_ind] + (re_prob[ind,beta_ind] - num/denom)
-          # hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (-denom*num+num^2)/denom^2
-          hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (num/denom) - (num/denom)^2
-
-          hess[1,beta_ind] <- hess[1,beta_ind] + (denom*num_cross - num*num0)/denom^2
-          hess[beta_ind,1] <- hess[beta_ind,1] + (denom*num_cross - num*num0)/denom^2
+            
         }
+        
+      }
+        
+      
+      denom <- sum(re_prob[risk_set,] * ageadj_risk)
+      
+      #fix age to be first variable
+      grad[1] <- grad[1] + (age_vec[ind] - num0/denom)
+      hess[1,1] <- hess[1,1] + (num02/denom) - (num0/denom)^2
+      
+      ###MISTAKE HERE
+      ### SHOULD ONLY ENTER GRAD[5] OR GRAD[6] IF RESPECTIVE COVARIATE IS TRUE
+      ### NEED ANALOGUE TO BETA_IND FOR LOOP
 
+      grad[5] <- grad[5] + (surv_covar[[2]][ind,2] - num_list[[2]][2]/denom)
+      grad[6] <- grad[6] + (surv_covar[[2]][ind,3] - num_list[[2]][3]/denom)
 
+      hess[5,5] <- hess[5,5] + num_list[[2]][2]/denom - (num_list[[2]][2]/denom)^2
+      hess[6,6] <- hess[6,6] + num_list[[2]][3]/denom - (num_list[[2]][3]/denom)^2
+
+      num_cross_age2 <- sum(re_prob[risk_set,] * ageadj_risk * age_vec[risk_set]*surv_covar[[2]][risk_set,2]%x% t(numeric(mix_num)+1))
+      hess[1,5] <- hess[1,5] + (denom*num_cross_age2 - num_list[[2]][[2]]*num0)/denom^2
+      hess[5,1] <- hess[5,1] + (denom*num_cross_age2 - num_list[[2]][[2]]*num0)/denom^2
+
+      num_cross_age3 <- sum(re_prob[risk_set,] * ageadj_risk * age_vec[risk_set]*surv_covar[[2]][risk_set,3]%x% t(numeric(mix_num)+1))
+      hess[1,6] <- hess[1,6] + (denom*num_cross_age3 - num_list[[2]][[3]]*num0)/denom^2
+      hess[6,1] <- hess[6,1] + (denom*num_cross_age3 - num_list[[2]][[3]]*num0)/denom^2
+
+      for (beta_ind in 2:mix_num){
+        num <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set)))
+        grad[beta_ind] <- grad[beta_ind] + (re_prob[ind,beta_ind] - num/denom)
+        
+        hess[beta_ind,beta_ind] <- hess[beta_ind,beta_ind] + (num/denom) - (num/denom)^2
+
+        num_cross <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set))* age_vec[risk_set])
+        hess[1,beta_ind] <- hess[1,beta_ind] + (denom*num_cross - num*num0)/denom^2
+        hess[beta_ind,1] <- hess[beta_ind,1] + (denom*num_cross - num*num0)/denom^2
+
+        
+        num_cross2 <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set))* surv_covar[[2]][risk_set,2])
+        hess[5,beta_ind] <- hess[5,beta_ind] + (denom*num_cross2 - num*num_list[[2]][[2]])/denom^2
+        hess[beta_ind,5] <- hess[beta_ind,5] + (denom*num_cross2 - num*num_list[[2]][[2]])/denom^2
+
+        num_cross3 <- sum(re_prob[risk_set,beta_ind] * exp(beta_vec[beta_ind])*exp(SurvCovarRiskScore(surv_coef,surv_covar,risk_set))* surv_covar[[2]][risk_set,3])
+        hess[6,beta_ind] <- hess[6,beta_ind] + (denom*num_cross3 - num*num_list[[2]][[3]])/denom^2
+        hess[beta_ind,6] <- hess[beta_ind,6] + (denom*num_cross3 - num*num_list[[2]][[3]])/denom^2
       }
 
 
@@ -1212,32 +1297,43 @@ CalcBetaManual <- function(beta_vec_long,stop_crit){
       diag(step_mat) <- (diag(step_mat) + step_size - .01)
       nr_fact <- SolveCatch(hess + step_mat,-grad)
       step_size <- step_size * 10
-      beta_vec_long_new <- beta_vec_long-nr_fact
-      new_slike <- SurvLike(beta_vec_long_new)
+    
+      
+      beta_surv_coef_new <- beta_surv_coef-nr_fact
+      beta_vec_new <- c(0,beta_surv_coef_new[2:4])
+      surv_coef_new <- list(beta_surv_coef_new[1],c(0,beta_surv_coef_new[5:6]))
+      # surv_coef_new <- list(beta_surv_coef_new[1])
+      
+      
+      new_slike <- SurvLike(beta_vec_new,surv_coef_new)
       slike_diff <- old_slike - new_slike
     }
 
-    l2norm <- sum(sqrt((beta_vec_long_new - beta_vec_long)^2))
+    l2norm <- sum(sqrt((beta_surv_coef_new - beta_surv_coef)^2))
 
 
 
-    beta_vec_long <- beta_vec_long_new
+    beta_surv_coef <- beta_surv_coef_new
     # print(slike_diff)
 
     # beta_vec_long[beta_vec_long>200] <- 200
 
   }
-  return(list(beta_vec_long,hess))
+  return(beta_surv_coef)
+  return(list(beta_surv_coef,hess))
 }
 
-CalcBeta <- function(beta_vec_long, incl_surv, stop_crit = 1){
+CalcBeta <- function(beta_surv_coef, incl_surv, stop_crit = 1){
   
   if (incl_surv!=0){
-    beta_vec_long_hess <- CalcBetaManual(beta_vec_long, stop_crit)
-    beta_vec_long <- beta_vec_long_hess[[1]]
-    hess <- beta_vec_long_hess[[2]]
-    se <- sqrt(diag(solve(hess)))
-    return(list(beta_vec_long,se))
+    # beta_vec_long_hess <- CalcBetaManual(beta_vec_long, stop_crit)
+    # beta_vec_long <- beta_vec_long_hess[[1]]
+    # hess <- beta_vec_long_hess[[2]]
+    # se <- sqrt(diag(solve(hess)))
+    # return(list(beta_vec_long,se))
+    
+    beta_surv_coef_new <- CalcBetaManual(beta_surv_coef, stop_crit)
+    return(beta_surv_coef_new)
   }
   
   surv_data <- data.frame(time = surv_time,
@@ -1683,9 +1779,9 @@ CalcSigmas <- function(obs_mat,lod_obs,weights_array,mean_mat){
 
 Forward <- function(act, light,init,tran_list, 
                     emit_act, emit_light,
-                    lod_act, lod_light, corr_mat, beta_vec, beta_age, 
+                    lod_act, lod_light, corr_mat, beta_vec, surv_coef, 
                     event_vec, bline_vec, cbline_vec, lintegral_mat, log_sweights_vec, 
-                    age_vec, vcovar_mat, lambda_act_mat, lambda_light_mat, tobit, incl_surv){
+                    surv_covar, vcovar_mat, lambda_act_mat, lambda_light_mat, tobit, incl_surv){
   
   alpha_list <- list()
   day_length <- dim(act)[1]
@@ -1704,12 +1800,13 @@ Forward <- function(act, light,init,tran_list,
   for (ind in 1:dim(act)[2]){
     alpha_array <- array(NA,dim = c(day_length,2,mix_num))
     ind_log_sweight <- log_sweights_vec[ind]
+    covar_risk <- SurvCovarRiskScore(surv_coef,surv_covar,ind)
     
     for (clust_i in 1:mix_num){
       #NEED TO ADD WEIGHT
       alpha_array[,,clust_i] <- ForwardIndC(act[,ind], light[,ind], init[clust_i,], tran_list, emit_act_week, emit_light_week, 
                                             emit_act_weekend, emit_light_weekend,clust_i-1, lod_act, lod_light, corr_mat, 
-                                            beta_vec, beta_age,age_vec[ind],surv_event[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, 
+                                            beta_vec,covar_risk,surv_event[ind], bline_vec[ind], cbline_vec[ind], lintegral_mat, 
                                             ind_log_sweight, vcovar_mat[,ind],lambda_act_mat, lambda_light_mat, tobit, adj_incl_surv*beta_bool)
       alpha_list[[ind]] <- alpha_array
     }
@@ -1748,7 +1845,7 @@ Backward <- function(act, light, tran_list,
 }
 
 
-CalcS <- function(event_time,cbline_vec_new,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment){
+CalcS <- function(event_time,cbline_vec_new,beta_vec,surv_coef,surv_covar,re_prob,incl_surv,mix_assignment){
   surv_mat_ind <- matrix(NA,length(event_time),dim(re_prob)[1])
   surv_vec <- numeric(length(event_time))
   
@@ -1758,7 +1855,7 @@ CalcS <- function(event_time,cbline_vec_new,beta_vec,beta_age,age_vec,re_prob,in
       
       
       for (re_ind in 1:mix_num){
-        rs <- rs + exp(-cbline_vec_new[t]* exp(beta_vec[re_ind]+(beta_age * age_vec[ind]))) * re_prob[ind,re_ind]
+        rs <- rs + exp(-cbline_vec_new[t]* exp(beta_vec[re_ind]+SurvCovarRiskScore(surv_coef,surv_covar,ind))) * re_prob[ind,re_ind]
       }
       
       surv_vec[t] <- rs
@@ -1777,28 +1874,6 @@ Vec2StepPlot <- function(cens_dist,cens_dist_time,t_i){
   }
   return(cens_dist[length(cens_dist_time)])
   
-}
-
-CalcCInd <- function(tau,surv_event,surv_time,beta_vec,beta_age,re_prob,age_vec,cens_dist, incl_surv, mix_assignment){
-  num <- 0
-  denom <- 0
-  surv_ind_vec <- which(surv_event==1 & surv_time < tau)
-  
-  for (i in surv_ind_vec){
-    jsurv_inds <- which(surv_time[i]<surv_time)
-    
-    for(j in jsurv_inds){
-      
-      gi <- sum(re_prob[i,] * exp(beta_vec)*exp(beta_age*age_vec[i])* age_vec[i])
-      gj <- sum(re_prob[j,] * exp(beta_vec)*exp(beta_age*age_vec[j])* age_vec[j])
-    
-      denom <- denom + (Vec2StepPlot(cens_dist,cens_dist_time,surv_time[i])^-2)
-      num <- num + (Vec2StepPlot(cens_dist,cens_dist_time,surv_time[i])^-2 * (gi>gj))
-      
-      
-    }
-  }
-  return(num/denom)
 }
 
 BrierScore <- function(bs_t,surv_event,surv_time,cens_dist,cens_dist_time,surv_mat_ind,disc){
@@ -1867,7 +1942,7 @@ IndBSold <- function(){
 }
 
 
-CalcCindex <- function(surv_time,surv_event,beta_vec,beta_age,re_prob,age_vec){
+CalcCindex <- function(surv_time,surv_event,beta_vec,surv_coef,re_prob,surv_covar){
   denom <- 0
   num <- 0
   for (j in 1:length(surv_time)){
@@ -1877,8 +1952,8 @@ CalcCindex <- function(surv_time,surv_event,beta_vec,beta_age,re_prob,age_vec){
       if (surv_event[j] == 1){
         if (i != j){
           
-          risk_i <- (re_prob[i,] %*% beta_vec)+(beta_age * age_vec[i])
-          risk_j <- (re_prob[j,] %*% beta_vec)+(beta_age * age_vec[j])
+          risk_i <- (re_prob[i,] %*% beta_vec)+SurvCovarRiskScore(surv_coef,surv_covar,i)
+          risk_j <- (re_prob[j,] %*% beta_vec)+SurvCovarRiskScore(surv_coef,surv_covar,j)
           
           if (surv_time[i] > surv_time[j]){
             denom <- denom + 1
@@ -1900,7 +1975,7 @@ CalcCindex <- function(surv_time,surv_event,beta_vec,beta_age,re_prob,age_vec){
 }
 
 
-CalcIBS <- function(surv_time,surv_event,cbline_vec,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment){
+CalcIBS <- function(surv_time,surv_event,cbline_vec,beta_vec,surv_coef,surv_covar,re_prob,incl_surv,mix_assignment){
   event_time <- unique(sort(surv_time))
   cbline_vec_new <- unique(sort(cbline_vec))
   # cbline_vec_new <- basehaz(cox1,centered = F)[,1]
@@ -1912,7 +1987,7 @@ CalcIBS <- function(surv_time,surv_event,cbline_vec,beta_vec,beta_age,age_vec,re
   
   cbline_vec_new <- cbline_vec[stime_vec]
   
-  surv_mat_ind <- CalcS(event_time,cbline_vec_new,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment)
+  surv_mat_ind <- CalcS(event_time,cbline_vec_new,beta_vec,surv_coef,surv_covar,re_prob,incl_surv,mix_assignment)
   
   
   
@@ -1937,16 +2012,16 @@ readCpp( "../Rcode/cFunctions.cpp" )
 ###### True Settings ###### 
 if (sim_size == 0){
   day_length <- 96 * 2
-  num_of_people <- 2000
+  num_of_people <- 1000
   missing_perc <- .2
-} else if (sim_size == 1) {
+} else if (sim_size== 1) {
   day_length <- 96 * 4
   num_of_people <- 4000
-  missing_perc <- .2
-} else {
+  missing_perc <- 0
+} else if (sim_size== 2) {
   day_length <- 96 * 7
   num_of_people <- 7000
-  missing_perc <- .2
+  missing_perc <- 0
 }
   
 
@@ -2065,19 +2140,19 @@ if (misspecification){
   
   params_tran_week_true <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T) 
   params_tran_week_true[,1] <- seq(-3.2,-2,length.out = mix_num)
-  params_tran_week_true[,2] <- seq(1.3,.8,length.out = mix_num)
+  params_tran_week_true[,2] <- seq(1.6,.8,length.out = mix_num)
   params_tran_week_true[,3] <- seq(.1,.9,length.out = mix_num)
-  params_tran_week_true[,4] <- seq(-1.8,-2.4,length.out = mix_num)
-  params_tran_week_true[,5] <- seq(-1.3,-.8,length.out = mix_num)
-  params_tran_week_true[,6] <- seq(-.7,-.9,length.out = mix_num)
+  params_tran_week_true[,4] <- seq(-1.6,-2.4,length.out = mix_num)
+  params_tran_week_true[,5] <- seq(-1.7,-.8,length.out = mix_num)
+  params_tran_week_true[,6] <- seq(-.3,-.9,length.out = mix_num)
   
   params_tran_weekend_true <- matrix(rep(c(0,0,0,0,0,0),mix_num),ncol = 6,byrow = T) 
-  params_tran_weekend_true[,1] <- seq(-3,-2.1,length.out = mix_num)
-  params_tran_weekend_true[,2] <- seq(1,.7,length.out = mix_num)
+  params_tran_weekend_true[,1] <- seq(-3.2,-2.1,length.out = mix_num)
+  params_tran_weekend_true[,2] <- seq(1,.5,length.out = mix_num)
   params_tran_weekend_true[,3] <- seq(.1,.9,length.out = mix_num)
-  params_tran_weekend_true[,4] <- seq(-1.8,-2.4,length.out = mix_num)
-  params_tran_weekend_true[,5] <- seq(-1.3,-.8,length.out = mix_num)
-  params_tran_weekend_true[,6] <- seq(-.9,-1.1,length.out = mix_num)
+  params_tran_weekend_true[,4] <- seq(-1.2,-2.4,length.out = mix_num)
+  params_tran_weekend_true[,5] <- seq(-1.6,-.8,length.out = mix_num)
+  params_tran_weekend_true[,6] <- seq(-.4,-1.1,length.out = mix_num)
   
   
   params_tran_array_dim <- c(mix_num,6,vcovar_num)
@@ -2086,16 +2161,16 @@ if (misspecification){
   params_tran_array_true[,,2] <- params_tran_weekend_true 
   
   emit_act_week_true <- array(NA, c(2,2,mix_num))
-  emit_act_week_true[1,1,] <- seq(4,5,length.out = mix_num)
-  emit_act_week_true[1,2,] <- seq(2,3,length.out = mix_num)
-  emit_act_week_true[2,1,] <- seq(2,1,length.out = mix_num)
-  emit_act_week_true[2,2,] <- seq(3,2,length.out = mix_num)
+  emit_act_week_true[1,1,] <- seq(4,7,length.out = mix_num)
+  emit_act_week_true[1,2,] <- seq(2,8,length.out = mix_num)
+  emit_act_week_true[2,1,] <- seq(4,1,length.out = mix_num)
+  emit_act_week_true[2,2,] <- seq(3,1,length.out = mix_num)
   
   emit_act_weekend_true <- array(NA, c(2,2,mix_num))
-  emit_act_weekend_true[1,1,] <- seq(5,6,length.out = mix_num)
-  emit_act_weekend_true[1,2,] <- seq(3,4,length.out = mix_num)
-  emit_act_weekend_true[2,1,] <- seq(2,1,length.out = mix_num)
-  emit_act_weekend_true[2,2,] <- seq(3,2,length.out = mix_num)
+  emit_act_weekend_true[1,1,] <- seq(4,6,length.out = mix_num)
+  emit_act_weekend_true[1,2,] <- seq(1,4,length.out = mix_num)
+  emit_act_weekend_true[2,1,] <- seq(4,1,length.out = mix_num)
+  emit_act_weekend_true[2,2,] <- seq(5,2,length.out = mix_num)
   
   emit_act_true <- array(NA, c(2,2,mix_num,2))
   emit_act_true[,,,1] <- emit_act_week_true
@@ -2103,26 +2178,26 @@ if (misspecification){
   
   
   emit_light_week_true <- array(NA, c(2,2,mix_num))
-  emit_light_week_true[1,1,] <- seq(-2,-1,length.out = mix_num)
-  emit_light_week_true[1,2,] <- seq(8,6,length.out = mix_num)
-  emit_light_week_true[2,1,] <- seq(-17,-19,length.out = mix_num)
-  emit_light_week_true[2,2,] <- seq(13,15,length.out = mix_num)
+  emit_light_week_true[1,1,] <- seq(-5,-1,length.out = mix_num)
+  emit_light_week_true[1,2,] <- seq(8,3,length.out = mix_num)
+  emit_light_week_true[2,1,] <- seq(-15,-19,length.out = mix_num)
+  emit_light_week_true[2,2,] <- seq(13,19,length.out = mix_num)
   
   emit_light_weekend_true <- array(NA, c(2,2,mix_num))
-  emit_light_weekend_true[1,1,] <- seq(-3,-2,length.out = mix_num)
-  emit_light_weekend_true[1,2,] <- seq(9,7,length.out = mix_num)
-  emit_light_weekend_true[2,1,] <- seq(-18,-21,length.out = mix_num)
-  emit_light_weekend_true[2,2,] <- seq(15,18,length.out = mix_num)
+  emit_light_weekend_true[1,1,] <- seq(-5,-2,length.out = mix_num)
+  emit_light_weekend_true[1,2,] <- seq(12,7,length.out = mix_num)
+  emit_light_weekend_true[2,1,] <- seq(-15,-17,length.out = mix_num)
+  emit_light_weekend_true[2,2,] <- seq(13,19,length.out = mix_num)
   
   emit_light_true <- array(NA, c(2,2,mix_num,2))
   emit_light_true[,,,1] <- emit_light_week_true
   emit_light_true[,,,2] <- emit_light_weekend_true
   
   corr_mat_true <- array(NA, c(mix_num,2,2))
-  corr_mat_true[,1,1] <- seq(0,.2,length.out = mix_num)
-  corr_mat_true[,2,1] <- seq(.1,.3,length.out = mix_num)
-  corr_mat_true[,1,2] <- seq(.2,.4,length.out = mix_num)
-  corr_mat_true[,2,2] <- seq(.3,.5,length.out = mix_num)
+  corr_mat_true[,1,1] <- seq(0,.5,length.out = mix_num)
+  corr_mat_true[,2,1] <- seq(.1,.7,length.out = mix_num)
+  corr_mat_true[,1,2] <- seq(.2,.9,length.out = mix_num)
+  corr_mat_true[,2,2] <- seq(.3,.7,length.out = mix_num)
   
   beta_vec_true <- seq(0,3,length.out = mix_num)
   beta_age_true <- 0.07
@@ -2163,6 +2238,7 @@ if (misspecification){
 }
 
   
+
 if (load_data){
   setwd("Data")
   load("JMHMMMix4Seed.rda")
@@ -2183,7 +2259,6 @@ if (load_data){
   lambda_light_mat_true <- to_save[[2]][[13]]
 }
 
-
 ###### Simulate Data ###### 
 if (!real_data){
   lod_act_true <- -5.809153
@@ -2192,13 +2267,15 @@ if (!real_data){
   lod_act <- lod_act_true
   lod_light <- lod_light_true
   
+  beta_covar_sim <- c(0,2,-3)
+  
   simulated_hmm <- SimulateHMM(day_length,num_of_people,
                                init=init_true,params_tran_array = params_tran_array_true,
                                emit_act = emit_act_true,emit_light = emit_light_true,
                                corr_mat = corr_mat_true,
                                lod_act = lod_act_true,lod_light = lod_light_true,
                                nu_mat = nu_mat_true,
-                               beta_age_true = beta_age_true,
+                               beta_age_true = beta_age_true,beta_covar_sim = beta_covar_sim,
                                missing_perc = missing_perc, beta_vec_true = beta_vec_true,
                                lambda_act_mat = lambda_act_mat_true,lambda_light_mat = lambda_light_mat_true,
                                misspecification = misspecification)
@@ -2211,6 +2288,7 @@ if (!real_data){
   vcovar_mat <-  simulated_hmm[[7]]
   # emp_params <- simulated_hmm[[7]]
   surv_list <- simulated_hmm[[8]]
+  surv_covar_sim <- simulated_hmm[[9]]
   
   surv_time <- surv_list[[1]]
   surv_event <- surv_list[[2]]
@@ -2373,6 +2451,8 @@ if (real_data) {
 
 ###### Initial Settings ###### 
 
+
+
 time_vec <- c()
 pi_l <- CalcPi(nu_mat,nu_covar_mat)
 re_prob <- pi_l
@@ -2382,35 +2462,33 @@ re_prob <- pi_l
 #
 
 if (leave_out|load_data){
-  # Correct way to do it
-  model_name_loadin <- "JMHMM"
-  # if (!real_data){model_name <- paste0(model_name,"SimSize",sim_size)}
-  if (!tobit){model_name_loadin <- paste0(model_name_loadin,"NonTob")}
-  if (incl_surv==0){model_name_loadin <- paste0(model_name_loadin,"NoSurv")}
-  if (incl_surv==1){model_name_loadin <- paste0(model_name_loadin,"HalfSurv")}
-  if (!incl_light){model_name_loadin <- paste0(model_name_loadin,"NoLight")}
-  if (!incl_act){model_name_loadin <- paste0(model_name_loadin,"NoAct")}
-  if (misspecification){model_name_loadin <- paste0(model_name_loadin,"Misspecified",misspecification)}
-  model_name_loadin <- paste0(model_name_loadin,"Mix",mix_num,"Seed",".rda")
-
-  model_name_loadin <- "JMHMMMix4Seed.rda"
-
-  print(paste("Loading",model_name_loadin))
-  setwd("Data")
-  load(model_name_loadin)
-  setwd("..")
-  
-  # if (incl_surv == 2){
-  #   model_name_loadin <- paste0("JMHMMLeaveOutMix",mix_num,"Seed",sim_num,".rda")
-  #   foldername <- paste0("LO",mix_num)
-  # } else {
-  #   model_name_loadin <- paste0("JMHMMLeaveOutNoSurvMix",mix_num,"Seed",sim_num,".rda")
-  #   foldername <- paste0("LONS",mix_num)
-  # }
+  # # Correct way to do it
+  # model_name_loadin <- "JMHMM"
+  # # if (!real_data){model_name <- paste0(model_name,"SimSize",sim_size)}
+  # if (!tobit){model_name_loadin <- paste0(model_name_loadin,"NonTob")}
+  # if (incl_surv==0){model_name_loadin <- paste0(model_name_loadin,"NoSurv")}
+  # if (incl_surv==1){model_name_loadin <- paste0(model_name_loadin,"HalfSurv")}
+  # if (!incl_light){model_name_loadin <- paste0(model_name_loadin,"NoLight")}
+  # if (!incl_act){model_name_loadin <- paste0(model_name_loadin,"NoAct")}
+  # if (misspecification){model_name_loadin <- paste0(model_name_loadin,"Misspecified",misspecification)}
+  # model_name_loadin <- paste0(model_name_loadin,"Mix",mix_num,"Seed",".rda")
+  # 
   # print(paste("Loading",model_name_loadin))
-  # setwd(foldername)
+  # setwd("Data")
   # load(model_name_loadin)
   # setwd("..")
+  
+  if (incl_surv == 2){
+    model_name_loadin <- paste0("JMHMM",mix_num,"Seed",sim_num,".rda")
+    foldername <- paste0(mix_num)
+  } else {
+    model_name_loadin <- paste0("JMHMMNoSurvMix",mix_num,"Seed",sim_num,".rda")
+    foldername <- paste0("NS",mix_num)
+  }
+  print(paste("Loading",model_name_loadin))
+  setwd(foldername)
+  load(model_name_loadin)
+  setwd("..")
     
     
   init <- to_save[[2]][[1]]
@@ -2460,7 +2538,7 @@ if (leave_out|load_data){
 # re_prob <- re_prob/rowSums(re_prob)
 ################## EM ##################
 
-runif_tol <- .05
+runif_tol <- .01
 
 if (randomize_init){
   init <- matrix(rep(.5,mix_num*2),ncol = 2)
@@ -2493,7 +2571,18 @@ if(!incl_act){
   act_old <- matrix(NA,dim(act_old)[1],dim(act_old)[2])
 }
 
-bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+surv_cont_vec <- c(1,0)
+
+surv_coef <- list(beta_age,c(0,.2,-.35))
+surv_covar <- list(age_vec,surv_covar_sim)
+
+# surv_coef <- list(beta_age)
+# surv_covar <- list(age_vec)
+
+
+
+
+bhaz_vec <- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
 bline_vec <- bhaz_vec[[1]]
 cbline_vec <- bhaz_vec[[2]]
 
@@ -2506,10 +2595,10 @@ alpha <- Forward(act = act,light = light,
          init = init,tran_list = tran_list,
          emit_act = emit_act,emit_light = emit_light,
          lod_act = lod_act, lod_light = lod_light, 
-         corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+         corr_mat = corr_mat, beta_vec = beta_vec, surv_coef = surv_coef,
          event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
          lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
-         age_vec = age_vec, vcovar_mat = vcovar_mat,
+         surv_covar = surv_covar, vcovar_mat = vcovar_mat,
          lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,tobit = tobit,incl_surv = incl_surv)
 
 beta <- Backward(act = act,light = light, tran_list = tran_list,
@@ -2520,18 +2609,18 @@ beta <- Backward(act = act,light = light, tran_list = tran_list,
          
 print("Post Beta")
 new_likelihood <- CalcLikelihood(alpha,pi_l)
-if (incl_surv == 2 & beta_bool == 0){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
+# if ((incl_surv*beta_bool) == 1){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
 likelihood_vec <- c(new_likelihood)
 likelihood <- -Inf
 like_diff <- new_likelihood - likelihood
 # apply(alpha[[1]][,,1]+beta[[1]][,,1],1,logSumExp)
 iter_count <- 1
-stop_crit <- 1e-3
+stop_crit <- 1e-4
 # if(!real_data){stop_crit <- stop_crit/10}
 if(mix_num > 8){stop_crit <- stop_crit * 10}
 if(mix_num > 12){stop_crit <- stop_crit * 10}
 if(mix_num > 15){stop_crit <- stop_crit * 5}
-
+# break
 while(abs(like_diff) > stop_crit){
 # for (i in 1:1){
   start_time <- Sys.time()
@@ -2550,15 +2639,24 @@ while(abs(like_diff) > stop_crit){
     re_prob <- CalcProbRE(alpha,pi_l)
     
     if (incl_surv == 2){
-      beta_vec_long <- c(beta_age,beta_vec[-1])
-      beta_vec_long_se <- CalcBeta(beta_vec_long,incl_surv)
-      # beta_vec_long_se <- CalcBeta(beta_vec_long,1)
-      beta_vec_long <- beta_vec_long_se[[1]]
-      beta_se <- beta_vec_long_se[[2]]
-      beta_age <- beta_vec_long[1]
-      beta_vec <- c(0,beta_vec_long[-1])
+      # beta_vec_long <- c(beta_age,beta_vec[-1])
+      # beta_vec_long_se <- CalcBeta(beta_vec_long,incl_surv)
+      # # beta_vec_long_se <- CalcBeta(beta_vec_long,1)
+      # beta_vec_long <- beta_vec_long_se[[1]]
+      # beta_se <- beta_vec_long_se[[2]]
+      # beta_age <- beta_vec_long[1]
+      # beta_vec <- c(0,beta_vec_long[-1])
       
-      bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+      # beta_surv_coef <- c(surv_coef[[1]],beta_vec[-1],surv_coef[[2]][-1])
+      # beta_surv_coef <- c(surv_coef[[1]],beta_vec[-1])
+      
+      beta_surv_coef <- c(surv_coef[[1]],beta_vec[-1],surv_coef[[2]][-1])
+      beta_surv_coef <- CalcBeta(beta_surv_coef,incl_surv)
+      beta_vec <- c(0,beta_surv_coef[2:4])
+      surv_coef <- list(beta_surv_coef[1],c(0,beta_surv_coef[5:6]))
+      
+      
+      bhaz_vec <- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
       bline_vec <- bhaz_vec[[1]]
       cbline_vec <- bhaz_vec[[2]]
     }
@@ -2566,14 +2664,14 @@ while(abs(like_diff) > stop_crit){
   }
   
   params_tran_array_old <- params_tran_array
-  tran_gradhess_list <- CalcTranCHelper(alpha,beta,act,light,params_tran_array,
-                                 emit_act,emit_light,corr_mat,
-                                 pi_l,lod_act,lod_light,lintegral_mat,vcovar_mat,
-                                 lambda_act_mat, lambda_light_mat, tobit, check_tran,likelihood)
-  
-  params_tran_array <- LM(tran_gradhess_list[[1]],tran_gradhess_list[[2]],params_tran_array,check_tran,likelihood,pi_l)
-
-  init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
+  # tran_gradhess_list <- CalcTranCHelper(alpha,beta,act,light,params_tran_array,
+  #                                emit_act,emit_light,corr_mat,
+  #                                pi_l,lod_act,lod_light,lintegral_mat,vcovar_mat,
+  #                                lambda_act_mat, lambda_light_mat, tobit, check_tran,likelihood)
+  # 
+  # params_tran_array <- LM(tran_gradhess_list[[1]],tran_gradhess_list[[2]],params_tran_array,check_tran,likelihood,pi_l)
+  # 
+  # init <- CalcInit(alpha,beta,pi_l,log_sweights_vec)
 
   # #### Weights  #####
   weights_array_list <- CondMarginalize(alpha,beta,pi_l)
@@ -2588,28 +2686,28 @@ while(abs(like_diff) > stop_crit){
     
     if(incl_light){
 
-      emit_light[1,1,,] <- UpdateNorm(CalcLightMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      emit_light[2,1,,] <- UpdateNorm(CalcLightMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-
-      emit_light[1,2,,] <- UpdateNorm(CalcLightSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      emit_light[2,2,,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      # emit_light[1,1,,] <- UpdateNorm(CalcLightMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      # emit_light[2,1,,] <- UpdateNorm(CalcLightMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      # 
+      # emit_light[1,2,,] <- UpdateNorm(CalcLightSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+      # emit_light[2,2,,] <- UpdateNorm(CalcLightSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
     }
     
-    if (incl_act){
-      emit_act[1,2,,] <- UpdateNorm(CalcActSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      #HAD ISSUES WITH THIS VAR
-      emit_act[2,2,,] <- UpdateNorm(CalcActSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-
-
-      emit_act[1,1,,] <- UpdateNorm(CalcActMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      emit_act[2,1,,] <- UpdateNorm(CalcActMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-    }
-    
-    if (incl_act & incl_light){
-      corr_mat[,1,] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      corr_mat[,2,] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
-      
-    }
+    # if (incl_act){
+    #   emit_act[1,2,,] <- UpdateNorm(CalcActSig,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    #   #HAD ISSUES WITH THIS VAR
+    #   emit_act[2,2,,] <- UpdateNorm(CalcActSig,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    # 
+    # 
+    #   emit_act[1,1,,] <- UpdateNorm(CalcActMean,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    #   emit_act[2,1,,] <- UpdateNorm(CalcActMean,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    # }
+    # 
+    # if (incl_act & incl_light){
+    #   corr_mat[,1,] <- UpdateNorm(CalcBivarCorr,1,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    #   corr_mat[,2,] <- UpdateNorm(CalcBivarCorr,2,act,light,emit_act,emit_light,corr_mat,lod_act,lod_light,weights_array_wake,weights_array_sleep,vcovar_mat+1)
+    #   
+    # }
 
   } else {
     lambda_mat_list <- CalcBinom(act,light,weights_array_list)
@@ -2657,7 +2755,7 @@ while(abs(like_diff) > stop_crit){
     pi_l <- CalcPi(nu_mat,nu_covar_mat)
     re_prob <- CalcProbRE(alpha,pi_l)
 
-    bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+    bhaz_vec <- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
     bline_vec <- bhaz_vec[[1]]
     cbline_vec <- bhaz_vec[[2]]
     
@@ -2704,14 +2802,14 @@ while(abs(like_diff) > stop_crit){
   lintegral_mat <- CalcLintegralMat(emit_act,emit_light,corr_mat,lod_act,lod_light)
   
   alpha <- Forward(act = act,light = light,
-                    init = init,tran_list = tran_list,
-                    emit_act= emit_act,emit_light = emit_light,
-                    lod_act = lod_act, lod_light = lod_light, 
-                    corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
-                    event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
-                    lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
-                    age_vec = age_vec, vcovar_mat = vcovar_mat,
-                    lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat, tobit = tobit,incl_surv = incl_surv*beta_bool)
+                   init = init,tran_list = tran_list,
+                   emit_act= emit_act,emit_light = emit_light,
+                   lod_act = lod_act, lod_light = lod_light, 
+                   corr_mat = corr_mat, beta_vec = beta_vec, surv_coef = surv_coef,
+                   event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
+                   lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
+                   surv_covar = surv_covar, vcovar_mat = vcovar_mat,
+                   lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat, tobit = tobit,incl_surv = incl_surv*beta_bool)
   
   beta <- Backward(act = act,light = light, tran_list = tran_list,
                     emit_act = emit_act,emit_light = emit_light,
@@ -2722,7 +2820,7 @@ while(abs(like_diff) > stop_crit){
   
   new_likelihood <- CalcLikelihood(alpha,pi_l)
   
-  if (incl_surv == 2 & beta_bool == 0){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
+  # if ((incl_surv*beta_bool) == 1){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
   
   like_diff <- new_likelihood - likelihood
   
@@ -2736,14 +2834,14 @@ while(abs(like_diff) > stop_crit){
                      init = init,tran_list = tran_list,
                      emit_act = emit_act,emit_light= emit_light,
                      lod_act = lod_act, lod_light = lod_light, 
-                     corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+                     corr_mat = corr_mat, beta_vec = beta_vec, surv_coef = surv_coef,
                      event_vec = surv_event, bline_vec = bline_vec, cbline_vec = cbline_vec,
                      lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec,
-                     age_vec = age_vec, vcovar_mat = vcovar_mat,
+                     surv_covar = surv_covar, vcovar_mat = vcovar_mat,
                      lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat, tobit = tobit,incl_surv = incl_surv)
     
     new_likelihood <- CalcLikelihood(alpha,pi_l)
-    if (incl_surv == 2 & beta_bool == 0){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
+    # if ((incl_surv*beta_bool) == 1){new_likelihood <- new_likelihood - SurvLike(beta_vec_long)}
     like_diff <- new_likelihood - likelihood
   }
   
@@ -2782,7 +2880,7 @@ while(abs(like_diff) > stop_crit){
     est_params <- list(init,params_tran_array,
                        emit_act,emit_light,
                        corr_mat,nu_mat,
-                       beta_vec,beta_age)
+                       beta_vec,surv_coef)
                        # tran_df,
                        # re_prob,
                        # new_likelihood,
@@ -2798,14 +2896,14 @@ while(abs(like_diff) > stop_crit){
 }
 
 if (incl_surv != 2){
-  beta_vec_long <- c(beta_age,beta_vec[-1])
-  beta_vec_long_se <- CalcBeta(beta_vec_long,incl_surv,stop_crit = .001)
-  beta_vec_long <- beta_vec_long_se[[1]]
-  beta_se <- beta_vec_long_se[[2]]
-  beta_age <- beta_vec_long[1]
-  beta_vec <- c(0,beta_vec_long[-1])
+  # beta_vec_long <- c(beta_age,beta_vec[-1])
+  # beta_vec_long_se <- CalcBeta(beta_vec_long,incl_surv,stop_crit = .001)
+  # beta_vec_long <- beta_vec_long_se[[1]]
+  # beta_se <- beta_vec_long_se[[2]]
+  # beta_age <- beta_vec_long[1]
+  # beta_vec <- c(0,beta_vec_long[-1])
   
-  bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+  bhaz_vec <- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
   bline_vec <- bhaz_vec[[1]]
   cbline_vec <- bhaz_vec[[2]]
   
@@ -2829,7 +2927,7 @@ if (incl_surv != 2){
     pi_l <- CalcPi(nu_mat,nu_covar_mat)
     re_prob <- CalcProbRE(alpha,pi_l)
     
-    bhaz_vec <- CalcBLHaz(beta_age,beta_vec,re_prob,surv_event,surv_time,age_vec)
+    bhaz_vec <- CalcBLHaz(surv_coef,beta_vec,re_prob,surv_event,surv_time,surv_covar)
     bline_vec <- bhaz_vec[[1]]
     cbline_vec <- bhaz_vec[[2]]
     
@@ -2894,7 +2992,7 @@ true_params <- list(init_true,params_tran_array_true,
 est_params <- list(init,params_tran_array,
                    emit_act,emit_light,
                    corr_mat,nu_mat,
-                   beta_vec,beta_age,
+                   beta_vec,surv_coef,
                    tran_df,
                    re_prob,
                    new_likelihood,
@@ -2919,6 +3017,7 @@ if (leave_out){
   new_vcovar_mat <- vcovar_mat_old[,leave_out_inds]
   len <- dim(new_act)[1]
   num_of_people <- dim(new_act)[2]
+  #NEED TO CHANGE NEW AGE VEC
   new_age_vec <- age_vec_old[leave_out_inds]
   new_pi_l <- CalcPi(nu_mat,nu_covar_mat_old[leave_out_inds,])
 
@@ -2984,10 +3083,10 @@ if (leave_out){
                        init = init,tran_list = tran_list,
                        emit_act = emit_act,emit_light = emit_light,
                        lod_act = lod_act, lod_light = lod_light,
-                       corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+                       corr_mat = corr_mat, beta_vec = beta_vec, surv_coef = surv_coef,
                        event_vec = numeric(100), bline_vec = numeric(100), cbline_vec = numeric(100),
                        lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec_new,
-                       age_vec = new_age_vec, vcovar_mat = new_vcovar_mat,
+                       surv_covar = new_surv_covar, vcovar_mat = new_vcovar_mat,
                        lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,
                        tobit = T,incl_surv = 0)
     }
@@ -3001,8 +3100,8 @@ if (leave_out){
     conf_mat_ind <- table(mix_assignment_pred,mix_assignment_true_ind)
     diag(conf_mat_ind) <- diag(conf_mat_ind) - 1
     
-    cindex <- CalcCindex(surv_time_new,surv_event_new,beta_vec,beta_age,re_prob_new,new_age_vec)
-    ibs <- CalcIBS(surv_time_new,surv_event_new,cbline_vec,beta_vec,beta_age,new_age_vec,re_prob_new,incl_surv,mix_assignment_pred)
+    cindex <- CalcCindex(surv_time_new,surv_event_new,beta_vec,surv_coef,re_prob_new,new_age_vec)
+    ibs <- CalcIBS(surv_time_new,surv_event_new,cbline_vec,beta_vec,surv_coef,new_age_vec,re_prob_new,incl_surv,mix_assignment_pred)
     
     
     re_prob_new_list[[days_incl]] <- append(re_prob_new_list[[days_incl]],list(re_prob_new))
@@ -3029,10 +3128,10 @@ if (leave_out){
                    init = init,tran_list = tran_list,
                    emit_act = emit_act,emit_light = emit_light,
                    lod_act = lod_act, lod_light = lod_light,
-                   corr_mat = corr_mat, beta_vec = beta_vec, beta_age = beta_age,
+                   corr_mat = corr_mat, beta_vec = beta_vec, surv_coef = surv_coef,
                    event_vec = numeric(100), bline_vec = numeric(100), cbline_vec = numeric(100),
                    lintegral_mat = lintegral_mat,log_sweight = log_sweights_vec_new,
-                   age_vec = new_age_vec, vcovar_mat = new_vcovar_mat,
+                   surv_covar = new_surv_covar, vcovar_mat = new_vcovar_mat,
                    lambda_act_mat = lambda_act_mat,lambda_light_mat = lambda_light_mat,
                    tobit = T,incl_surv = 0)
   
@@ -3044,8 +3143,8 @@ if (leave_out){
   diag(conf_mat) <- diag(conf_mat) - 1
   
   
-  cindex <- CalcCindex(surv_time_new,surv_event_new,beta_vec,beta_age,re_prob_new,new_age_vec)
-  ibs <- CalcIBS(surv_time_new,surv_event_new,cbline_vec,beta_vec,beta_age,new_age_vec,re_prob_new,incl_surv,mix_assignment_pred)
+  cindex <- CalcCindex(surv_time_new,surv_event_new,beta_vec,surv_coef,re_prob_new,new_age_vec)
+  ibs <- CalcIBS(surv_time_new,surv_event_new,cbline_vec,beta_vec,surv_coef,new_age_vec,re_prob_new,incl_surv,mix_assignment_pred)
    
   
   # leave_out_weekend_list <- list(leave_out_inds,re_prob_new,mix_assignment_pred,conf_mat,cindex,ibs)
@@ -3077,8 +3176,8 @@ if (save_space){
   est_params[[16]] <- 0
 }
 
-ibs <- CalcIBS(surv_time,surv_event,cbline_vec,beta_vec,beta_age,age_vec,re_prob,incl_surv,mix_assignment)
-cindex <- CalcCindex(surv_time,surv_event,beta_vec,beta_age,re_prob,age_vec)
+ibs <- CalcIBS(surv_time,surv_event,cbline_vec,beta_vec,surv_coef,surv_covar,re_prob,incl_surv,mix_assignment)
+cindex <- CalcCindex(surv_time,surv_event,beta_vec,surv_coef,re_prob,surv_covar)
 diagnostics <- list(cindex,ibs,tab)
 
 bic <- CalcBIC(new_likelihood,mix_num,act,light)
@@ -3098,3 +3197,13 @@ save(to_save,file = model_name)
 # beta_age <- fit$coefficients
 # ibs <- CalcIBS(surv_time,surv_event,cbline_vec,numeric(mix_num),beta_age,age_vec,re_prob,incl_surv,mix_assignment)
 # cindex <- CalcCindex(surv_time,surv_event,numeric(mix_num),beta_age,re_prob,incl_surv)
+
+beta_vec_surv_coef <- c(beta_vec[-1],unlist(surv_coef)[-2])
+SurvLikeGrad(beta_vec_surv_coef)
+grad(SurvLikeGrad, beta_vec_surv_coef)
+num_grad <- grad(SurvLike, beta_vec_long)
+
+
+LikelihoodGrad <- function(beta_vec){
+  return(CalcLikelihood(alpha,pi_l))
+}
